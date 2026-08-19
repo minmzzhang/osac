@@ -27,6 +27,7 @@ filters:
     - amito
     - danielerez
     - htayrie-rh
+    - minmzzhang
     reviewers:
     - jhernand
     - adriengentil
@@ -54,3 +55,4 @@ filters:
     - amito
     - danielerez
     - htayrie-rh
+    - minmzzhang
