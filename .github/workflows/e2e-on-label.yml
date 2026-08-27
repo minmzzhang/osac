@@ -117,6 +117,7 @@ jobs:
           STARTED=0
           ERRORS=0
           SKIPPED=0
+          PENDING=0
           STALE=0
           TIMEOUTS=0
 
@@ -149,10 +150,11 @@ jobs:
 
           # Returns: 0 = ok to rerun (run completed, not success),
           #          2 = already going / already green (skip),
+          #          3 = readiness has not started (skip; in-flight run will pick up unlock),
           #          1 = error / timeout.
           wait_until_rerun_or_skip() {
             local run_id="$1"
-            local view status conclusion busy
+            local view status conclusion busy readiness
             for _ in $(seq 1 90); do
               view=$(gh run view "${run_id}" -R "${REPO}" --json status,conclusion,jobs)
               status=$(jq -r '.status' <<<"${view}")
@@ -170,10 +172,25 @@ jobs:
                   end
               ' <<<"${view}")
 
-              # No expensive job matched yet: do not assume idle.
+              # No expensive job yet. If readiness has not started, the in-flight
+              # PR run will see the unlock when it does: skip instead of waiting
+              # out GitHub's runner queue. If readiness is already running or
+              # done, keep waiting (may need rerun if the gate raced the unlock).
               if [[ "${busy}" == "unknown" && "${status}" != "completed" ]]; then
-                sleep 2
-                continue
+                readiness=$(jq -r '
+                  [.jobs[]
+                    | select(.name | test("readiness"; "i"))
+                    | select(.name | test("full-install"; "i") | not)
+                    | .status
+                  ]
+                  | if length == 0 then "missing" else .[0] end
+                ' <<<"${view}")
+                if [[ "${readiness}" != "missing" ]]; then
+                  sleep 2
+                  continue
+                fi
+                echo "Readiness has not started on run #${run_id}; skip rerun."
+                return 3
               fi
 
               if [[ "${busy}" == "true" ]]; then
@@ -266,6 +283,10 @@ jobs:
               SKIPPED=$((SKIPPED + 1))
               return
             fi
+            if [[ ${rc} -eq 3 ]]; then
+              PENDING=$((PENDING + 1))
+              return
+            fi
             if [[ ${rc} -ne 0 ]]; then
               TIMEOUTS=$((TIMEOUTS + 1))
               return
@@ -343,6 +364,9 @@ jobs:
             echo "- Started: ${STARTED}/${#E2E_WORKFLOWS[@]}"
             if [[ ${SKIPPED} -gt 0 ]]; then
               echo "- Already active/green (skipped rerun): ${SKIPPED}"
+            fi
+            if [[ ${PENDING} -gt 0 ]]; then
+              echo "- Readiness not started (in-flight run will pick up unlock): ${PENDING}"
             fi
             if [[ ${STALE} -gt 0 ]]; then
               echo "- Head moved or label withdrawn (no rerun): ${STALE}"
