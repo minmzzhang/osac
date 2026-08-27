@@ -29,8 +29,7 @@ jobs:
       pull-requests: write
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'pull_request_review' &&
-      github.event.workflow_run.head_repository.full_name != github.repository
+      github.event.workflow_run.event == 'pull_request_review'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -39,14 +38,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           EVENT_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
           REVIEWER: coderabbitai[bot]
         run: |
           set -euo pipefail
 
-          if [[ -z "${EVENT_HEAD_SHA}" || -z "${HEAD_REPO}" ]]; then
-            echo "workflow_run missing head_sha or head_repository; skipping."
+          if [[ -z "${EVENT_HEAD_SHA}" ]]; then
+            echo "workflow_run missing head_sha; skipping."
             exit 0
           fi
 
@@ -60,27 +58,37 @@ jobs:
             exit 0
           fi
 
-          if ! prs_json=$(gh api "repos/${REPO}/commits/${EVENT_HEAD_SHA}/pulls"); then
-            echo "Failed to list PRs for ${HEAD_REPO}@${EVENT_HEAD_SHA:0:7}; skipping."
+          # commits/{sha}/pulls is empty for unmerged fork SHAs.
+          # List open main PRs and match head.sha; take head.repo from the PR.
+          if ! prs_json=$(gh api --paginate \
+            "repos/${REPO}/pulls?state=open&base=main&per_page=100" \
+            --jq '.[]' | jq -s '.'); then
+            echo "Failed to list open PRs for ${EVENT_HEAD_SHA:0:7}; skipping."
             exit 0
           fi
-          pr_json=$(jq -c --arg sha "${EVENT_HEAD_SHA}" --arg repo "${HEAD_REPO}" '
+          pr_json=$(jq -c --arg sha "${EVENT_HEAD_SHA}" --arg base "${REPO}" '
             [.[]
               | select(.state == "open")
               | select(.base.ref == "main")
               | select(.head.sha == $sha)
-              | select((.head.repo.full_name // "") == $repo)
+              | select((.head.repo.full_name // "") != "")
+              | select((.head.repo.full_name // "") != $base)
             ]
             | if length == 1 then .[0] else empty end
           ' <<<"${prs_json}")
           if [[ -z "${pr_json}" || "${pr_json}" == "null" ]]; then
-            echo "No unique open main PR for ${HEAD_REPO}@${EVENT_HEAD_SHA:0:7}; skipping."
+            echo "No unique open fork PR targeting main at ${EVENT_HEAD_SHA:0:7}; skipping."
             exit 0
           fi
 
           PR_NUMBER=$(jq -r '.number' <<<"${pr_json}")
           HEAD_SHA=$(jq -r '.head.sha' <<<"${pr_json}")
           HEAD_REF=$(jq -r '.head.ref // empty' <<<"${pr_json}")
+          HEAD_REPO=$(jq -r '.head.repo.full_name // empty' <<<"${pr_json}")
+          if [[ -z "${HEAD_REPO}" ]]; then
+            echo "PR #${PR_NUMBER} has empty head.repo; skipping."
+            exit 0
+          fi
 
           pr_is_open() {
             [[ "$(jq -r '.state' <<<"${pr_json}")" == "open" ]]
