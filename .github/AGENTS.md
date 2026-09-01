@@ -13,4 +13,6 @@ Human GitHub `APPROVED` does **not** unlock. Fork PRs still need `ok-to-test` (o
 
 Cheap checks stay ungated. Schedules / `workflow_dispatch` / `merge_group` skip the readiness job.
 
+Path filter skips docs / unit-test-only PRs (`!**/tests/**` and friends). `tests/e2e/**` is the full-install suite and **must** still set `should-run` (`e2e-suite` filter). Do not fold `tests/e2e` back into the ignore list.
+
 Details + smoke checklist: [`.github/e2e-readiness.md`](e2e-readiness.md).

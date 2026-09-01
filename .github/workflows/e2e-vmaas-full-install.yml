@@ -47,7 +47,9 @@ jobs:
       # Same ignore list for pull_request and merge_group (OSAC-3879).
       # schedule / workflow_dispatch always run. e2e-*-gate still if: always()
       # so ruleset-required checks report when expensive E2E is skipped.
-      should-run: ${{ (github.event_name != 'pull_request' && github.event_name != 'merge_group') || steps.filter.outputs.code == 'true' }}
+      # tests/e2e/** is the full-install suite (OSAC-3593); still run when that
+      # tree changes even though `code` ignores **/tests/**.
+      should-run: ${{ (github.event_name != 'pull_request' && github.event_name != 'merge_group') || steps.filter.outputs.code == 'true' || steps.filter.outputs.e2e-suite == 'true' }}
     steps:
       # dorny/paths-filter uses git diff on merge_group (not the PR Files API),
       # so the repo must be checked out with enough history for base..head.
@@ -81,6 +83,8 @@ jobs:
               - '!**/it/**'
               - '!**/conftest.py'
               - '!**/fixtures/**'
+            e2e-suite:
+              - 'tests/e2e/**'
 
   # OSAC-3370: cheap readiness gate before expensive runners.
   # Allow: lgtm present, e2e-ready applied by github-actions[bot], or
