@@ -1,26 +1,13 @@
 name: Check generated code
 
 on:
+  # No paths: required names "Check generated code (fulfillment-service)"
+  # and "(osac-operator)" must report on every PR. Skip is on job steps
+  # (dorny + should-run). A trigger path filter leaves those names pending
+  # forever on PRs that only touch other components (e.g. BMFO-only).
   pull_request:
-    paths:
-      - 'fulfillment-service/**'
-      - '!fulfillment-service/OWNERS'
-      - '!fulfillment-service/LICENSE'
-      - '!fulfillment-service/**/*.md'
-      - '!fulfillment-service/docs/**'
-      - '!fulfillment-service/.claude/**'
-      - 'osac-operator/**'
-      - '!osac-operator/OWNERS'
-      - '!osac-operator/LICENSE'
-      - '!osac-operator/**/*.md'
-      - '!osac-operator/docs/**'
-      - '!osac-operator/.claude/**'
-      - 'osac-metering/metering-service/**'
-      - '!osac-metering/metering-service/OWNERS'
-      - '!osac-metering/metering-service/LICENSE'
-      - '!osac-metering/metering-service/**/*.md'
-      - '!osac-metering/metering-service/docs/**'
-      - '!osac-metering/metering-service/.claude/**'
+    branches:
+      - main
   merge_group:
 
 permissions:
