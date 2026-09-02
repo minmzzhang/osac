@@ -9,7 +9,7 @@ Full-install e2e (`e2e-vmaas-full-install`, `e2e-bmaas-full-install`, `e2e-caas-
 - `e2e-ready` label applied by `github-actions[bot]` via `/e2e-ready` (test-infra slash handler also `workflow_dispatch`es this repo's thin `e2e-on-label`, which `uses` the test-infra reusable; GITHUB_TOKEN cannot trigger `labeled` workflows; cleanup removes on push; manual UI labels are rejected)
 - `coderabbitai[bot]` `APPROVED` on the **exact current HEAD** (blocked while a human still has `CHANGES_REQUESTED`). Auto-start: same-repo via thin `e2e-on-approval` (`uses` test-infra `e2e-on-label`); forks via thin `e2e-on-approval-fork` (`uses` test-infra fork replay). `fork-handoff` stays a top-level job here so the replay gate can match it. `lgtm` / `/e2e-ready` still work.
 
-Human GitHub `APPROVED` does **not** unlock. Fork PRs still need `ok-to-test` (or org membership) for secrets/cluster — readiness is cost-only.
+Human GitHub `APPROVED` does **not** unlock. `/ok-to-test` is fork **secrets** only (`authorize-fork-pr`); it does not unlock the cost gate. Fork PRs need `/ok-to-test` (or org membership) **and** one of CR / `lgtm` / `/e2e-ready`.
 
 Cheap checks stay ungated. Schedules / `workflow_dispatch` / `merge_group` skip the readiness job.
 
