@@ -151,7 +151,7 @@ jobs:
               - 'tests/e2e/**'
 
   # OSAC-3370: cheap readiness gate before expensive runners.
-  # Allow: lgtm present, e2e-ready applied by github-actions[bot], or
+  # Allow: lgtm (present or previously applied), e2e-ready by github-actions[bot], or
   # coderabbitai[bot] APPROVED on exact HEAD (blocked by human CHANGES_REQUESTED).
   # Human APPROVED does not unlock. Non-PR events skip this job.
   # Not ready: ready=false (wait). Do not fail this job.

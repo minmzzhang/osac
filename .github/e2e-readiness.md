@@ -11,7 +11,7 @@ Action, `/e2e-ready`, label cleanup, the **e2e-on-label starter**, and **fork CR
 | Signal | Notes |
 |--------|--------|
 | `coderabbitai[bot]` `APPROVED` on exact HEAD | Primary. **Starts** e2e. Same-repo: `e2e-on-approval` (`pull_request_review`). Fork: that event has a read-only token / no secrets, so `e2e-on-approval` only hands off; `e2e-on-approval-fork.yml` (`workflow_run`, YAML from default branch) verifies APPROVED on exact HEAD and reruns. Blocked while any human still has outstanding `CHANGES_REQUESTED`. Abbreviated SHA does not count. The replay workflow must already be on `main` (this PR cannot replay itself before merge). |
-| `lgtm` label | Alternate. **Starts** e2e (`e2e-on-label`). Prow removes the label on new pushes. |
+| `lgtm` label | Alternate. **Starts** e2e (`e2e-on-label`). Prow removes the label on new pushes; a prior apply still unlocks later SHAs unless a human has outstanding `CHANGES_REQUESTED`. |
 | `e2e-ready` via `/e2e-ready` | Quiet override. Slash command applies the label as `github-actions[bot]` **and** starts e2e (`workflow_dispatch` of `e2e-on-label`; a GITHUB_TOKEN `labeled` event would not). Manual UI labels are rejected. Cleanup removes the label on push. |
 
 **Human `APPROVED` reviews do not unlock expensive e2e.**
@@ -40,7 +40,7 @@ not for the cost unlock.
 1. Open PR (code change) → cheap `e2e-readiness` succeeds with `ready=false`; required `e2e-*-gate` stays **pending**; no heavy runners.
 2. Docs-only PR → `e2e-readiness` skipped; `e2e-*-gate` reports success.
 3. When ready: CodeRabbit `APPROVED` on current head, **or** `/lgtm`, **or** `/e2e-ready`.
-4. Push more commits → `lgtm` (Prow) and `e2e-ready` (cleanup) drop → gate pending again until CodeRabbit re-approves or a label is re-applied.
+4. Push more commits → `e2e-ready` drops. `lgtm` label drops too, but a prior `/lgtm` still unlocks (unless a human has `CHANGES_REQUESTED`). Gate pending only if there was never `lgtm` and CodeRabbit has not re-approved.
 
 ## Smoke checklist
 
@@ -50,6 +50,6 @@ not for the cost unlock.
 - [ ] CodeRabbit `APPROVED` on exact head → e2e starts (same-repo: `e2e-on-approval`; fork: `e2e-on-approval-fork` after the handoff run completes).
 - [ ] Apply `lgtm` → `e2e-on-label` starts e2e.
 - [ ] `/e2e-ready` (bot-applied) unlocks **and** starts e2e (`e2e-on-label` run appears). A manual `e2e-ready` label does not.
-- [ ] Push a new commit → unlock labels removed → gate pending again.
+- [ ] Push a new commit → `e2e-ready` removed. If the PR had `lgtm` earlier, e2e still runs; otherwise gate pending again.
 - [ ] Optional: schedule / `workflow_dispatch` still runs without the label.
 - [ ] Docs-only PR: `e2e-*-gate` succeeds (merge not blocked on e2e).
