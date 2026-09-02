@@ -1,14 +1,14 @@
 name: Build container image
 
+# Required check name: Run unit tests (osac-operator)
+# No paths on pull_request: a trigger path filter leaves that name pending
+# in the merge queue. Skip is on steps. Image build stays gated on should-run.
+
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'osac-operator/**'
-      - '!osac-operator/OWNERS'
-      - '!osac-operator/LICENSE'
-      - '!osac-operator/**/*.md'
-      - '!osac-operator/docs/**'
+    branches: [main]
+  merge_group:
   push:
     branches:
     - main
@@ -31,35 +31,77 @@ env:
 
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      should-run: ${{ (github.event_name != 'pull_request' && github.event_name != 'merge_group') || steps.filter.outputs.code == 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: github.event_name == 'merge_group'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4.0.3
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'osac-operator/**'
+              - '!osac-operator/OWNERS'
+              - '!osac-operator/LICENSE'
+              - '!osac-operator/**/*.md'
+              - '!osac-operator/docs/**'
+              - '.github/workflows/build-image.yaml'
+
   test:
-    name: Run Tests
+    name: Run unit tests (osac-operator)
+    needs: changes
+    if: always()
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
+      - name: Fail if path filter failed
+        if: needs.changes.result != 'success'
+        run: exit 1
+      - id: should-run
+        if: needs.changes.result == 'success' && needs.changes.outputs.should-run == 'true'
+        run: echo "run=true" >> "$GITHUB_OUTPUT"
       - name: Checkout repository
-        uses: actions/checkout@v7
-
+        if: steps.should-run.outputs.run
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up Go
-        uses: actions/setup-go@v6
+        if: steps.should-run.outputs.run
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16  # v6
         with:
           go-version-file: 'osac-operator/go.mod'
-
       - name: Install kind
-        uses: helm/kind-action@v1
+        if: steps.should-run.outputs.run
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc  # v1
         with:
           install_only: true
-
       - name: Run unit tests
+        if: steps.should-run.outputs.run
         working-directory: osac-operator
         run: make test
-
       - name: Lint Helm charts
+        if: steps.should-run.outputs.run
         working-directory: osac-operator
         run: make helm-lint
 
   build:
-    needs: test
+    needs: [changes, test]
+    if: >-
+      always()
+      && needs.changes.result == 'success'
+      && needs.changes.outputs.should-run == 'true'
+      && needs.test.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
