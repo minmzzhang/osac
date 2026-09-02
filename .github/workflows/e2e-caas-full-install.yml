@@ -156,6 +156,7 @@ jobs:
   # Human APPROVED does not unlock. Non-PR events skip this job.
   # Not ready: ready=false (wait). Do not fail this job.
   e2e-readiness:
+    name: e2e-readiness (caas)
     needs: changes
     if: needs.changes.outputs.should-run == 'true' && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -164,6 +165,7 @@ jobs:
       pull-requests: read
     outputs:
       ready: ${{ steps.check.outputs.ready }}
+      reason: ${{ steps.check.outputs.reason }}
     steps:
       - name: Check e2e readiness
         id: check
@@ -283,6 +285,13 @@ jobs:
           echo ""
           echo "One or more upstream jobs failed or were cancelled."
           exit 1
+      - if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ needs.changes.outputs.should-run }}" != "true" ]; then
+            echo "docs-only, skipped"
+          else
+            echo "e2e passed"
+          fi
 
   # Latest check named e2e-caas-gate after the skipped gate job. Forks may
   # lack checks:write; unreported check is still Expected/Waiting.
@@ -304,20 +313,30 @@ jobs:
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CHECK_NAME: e2e-caas-gate
+          DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REASON: ${{ needs.e2e-readiness.outputs.reason }}
         run: |
           set -euo pipefail
+          title="${REASON:-waiting for e2e unlock}"
+          summary=$(printf '%s\n\n%s\n\n%s' "${title}" \
+            "Need coderabbitai[bot] APPROVED on this HEAD, lgtm, or /e2e-ready." \
+            "See .github/e2e-readiness.md")
           payload=$(jq -n \
             --arg name "${CHECK_NAME}" \
             --arg sha "${HEAD_SHA}" \
             --arg started "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg title "${title}" \
+            --arg details "${DETAILS_URL}" \
+            --arg summary "${summary}" \
             '{
               name: $name,
               head_sha: $sha,
               status: "in_progress",
+              details_url: $details,
               started_at: $started,
               output: {
-                title: "Waiting for e2e unlock",
-                summary: "Expensive e2e has not started. Need coderabbitai[bot] APPROVED on this HEAD, lgtm, or /e2e-ready.\n\nSee .github/e2e-readiness.md"
+                title: $title,
+                summary: $summary
               }
             }')
           if ! gh api "repos/${REPO}/check-runs" --input - <<<"${payload}"; then
