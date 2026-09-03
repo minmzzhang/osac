@@ -25,6 +25,9 @@ def _build_create_ci_args(
     args = [cli.binary, "--config", cli.config_dir, "create", "computeinstance"]
     if ci_name is not None:
         args += ["--name", ci_name]
+    storage_tier = cli.default_storage_tier
+    if not storage_tier:
+        raise ValueError("cli.default_storage_tier must be set")
     args += [
         "--template",
         vm_template,
@@ -36,6 +39,8 @@ def _build_create_ci_args(
         "20",
         "--disk-image",
         disk_image,
+        "--boot-disk-storage-tier",
+        storage_tier,
         "--run-strategy",
         "Always",
     ]
