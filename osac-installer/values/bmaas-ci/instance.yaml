@@ -45,7 +45,9 @@ service:
     caBundle:
       configMap: ca-bundle
   auth:
-    issuerUrl: https://keycloak.keycloak.svc.cluster.local/realms/osac
+    # issuerUrl defaults to a global.clusterDomain-backed external route URL
+    # (see charts/osac/values.yaml) -- correct automatically once
+    # install-osac sets --set global.clusterDomain=$(DOMAIN).
     emergencyServiceAccounts:
     - admin
     - osac-operator
@@ -62,7 +64,9 @@ service:
           param: client-secret
   idp:
     provider: keycloak
-    url: https://keycloak.keycloak.svc.cluster.local
+    # url defaults to a global.clusterDomain-backed external route URL (see
+    # charts/osac/values.yaml) -- correct automatically once install-osac
+    # sets --set global.clusterDomain=$(DOMAIN).
     credentials:
     - secret:
         name: fulfillment-controller-credentials
@@ -90,13 +94,13 @@ service:
   log:
     level: debug
   vault:
-    endpoint: "https://openbao.osac.svc.cluster.local:8200"
+    # endpoint and keycloakIssuerUrl both default correctly (see
+    # charts/osac/values.yaml) -- no override needed.
     namespace: osac
     kvMountPath: secret
     lifecycleRole: lifecycle
     lifecycleMountPath: jwt
     keycloakClientId: osac-controller
-    keycloakIssuerUrl: "https://keycloak.keycloak.svc.cluster.local/realms/osac"
     keycloakAudience: osac-api
     caBundle:
       configMap: ca-bundle
@@ -183,3 +187,12 @@ lvms:
 # Uses fsync=off — data is lost on restart. Not for production.
 bundledPostgres:
   enabled: true
+
+# --- Bundled OpenBao (Vault-compatible secret store) ---
+bundledVault:
+  # Override podSecurityContext for OpenShift restricted-v2 SCC: omit numeric
+  # runAsUser/runAsGroup/fsGroup — the SCC allocates UIDs from the namespace UID
+  # range and resolves the named user automatically. A non-nil value here fully
+  # replaces the template default (runAsUser:100/runAsGroup:1000/fsGroup:1000).
+  podSecurityContext:
+    runAsNonRoot: true
