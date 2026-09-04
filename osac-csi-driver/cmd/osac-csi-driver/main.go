@@ -5,8 +5,10 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/osac-project/osac/osac-csi-driver/pkg/driver"
 	"github.com/osac-project/osac/osac-csi-driver/pkg/fulfillment"
@@ -162,7 +164,9 @@ func dialFulfillment(
 	}
 
 	if clientID != "" && clientSecretFile != "" && issuerURL != "" {
-		ts, err := newClientCredentialsTokenSource(context.Background(), clientID, clientSecretFile, issuerURL)
+		ts, err := newClientCredentialsTokenSource(
+			context.Background(), clientID, clientSecretFile, issuerURL, insecureSkipVerify,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("setting up client credentials: %w", err)
 		}
@@ -176,10 +180,14 @@ func dialFulfillment(
 
 // newClientCredentialsTokenSource reads the client secret from a file and
 // returns an oauth2.TokenSource that uses the OAuth2 client_credentials grant
-// to obtain access tokens from the issuer's token endpoint.
+// to obtain access tokens from the issuer's token endpoint. insecureSkipVerify
+// applies to the token endpoint's TLS verification, matching the trust
+// decision already made for the fulfillment-service gRPC transport --
+// otherwise a self-signed issuer cert is trusted for gRPC but rejected here.
 func newClientCredentialsTokenSource(
 	ctx context.Context,
 	clientID, clientSecretFile, issuerURL string,
+	insecureSkipVerify bool,
 ) (oauth2.TokenSource, error) {
 	data, err := os.ReadFile(clientSecretFile)
 	if err != nil {
@@ -191,6 +199,17 @@ func newClientCredentialsTokenSource(
 	}
 
 	tokenURL := buildTokenURL(issuerURL)
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: insecureSkipVerify, //nolint:gosec // user-controlled flag
+	}
+	httpClient := &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+	}
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
 	cfg := &clientcredentials.Config{
 		ClientID:     clientID,
