@@ -71,31 +71,29 @@ jobs:
   # alongside the in-workflow jobs: complete-stale-e2e-gates is idempotent
   # (completes orphans, or finds none and no-ops), so this is a harmless
   # no-op on same-repo PRs where the in-workflow job already succeeded.
+  # Also runs on native failure/cancelled: an in_progress unlock orphan
+  # keeps the required check pending (merge-queue Cancel pending) even
+  # after the native gate already failed. Uses the repo-local script and
+  # GITHUB_TOKEN so github-actions-created checks can be patched without
+  # waiting on osac-test-infra@main.
   complete-stale-gates-after-full-install:
     if: >-
       github.event_name == 'workflow_run'
       && github.event.workflow_run.event == 'pull_request'
-      && github.event.workflow_run.conclusion == 'success'
+      && contains(fromJSON('["success","failure","cancelled"]'), github.event.workflow_run.conclusion)
     runs-on: ubuntu-latest
     permissions:
       checks: write
+      contents: read
     steps:
-      - name: Resolve gate name for this suite
-        id: gate
-        run: |
-          case "${{ github.event.workflow_run.name }}" in
-            "E2E VMaaS Full Install") echo "name=e2e-vmaas-gate" >> "$GITHUB_OUTPUT" ;;
-            "E2E BMaaS Full Install") echo "name=e2e-bmaas-gate" >> "$GITHUB_OUTPUT" ;;
-            "E2E CaaS Full Install") echo "name=e2e-caas-gate" >> "$GITHUB_OUTPUT" ;;
-            *)
-              echo "::error::Unknown workflow_run name: ${{ github.event.workflow_run.name }}"
-              exit 1
-              ;;
-          esac
-      - name: Complete stale in_progress gate checks
-        uses: osac-project/osac-test-infra/.github/actions/complete-stale-e2e-gates@main
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
-          head-sha: ${{ github.event.workflow_run.head_sha }}
-          gate-name: ${{ steps.gate.outputs.name }}
-          after-native-success: "true"
-          github-token: ${{ secrets.MERGE_QUEUE_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts/complete-stale-e2e-gate-checks.sh
+      - name: Complete stale in_progress gate checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          MODE: complete
+        run: bash .github/scripts/complete-stale-e2e-gate-checks.sh

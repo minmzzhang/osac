@@ -16,7 +16,7 @@ on:
         required: false
         type: string
       mode:
-        description: complete = success after native gate; dismiss = cancel unlock orphans
+        description: complete = mirror native terminal gate; dismiss = cancel unlock orphans
         required: false
         default: complete
         type: choice

@@ -3,11 +3,13 @@
 # still in_progress, or already (mis-)finalized by an earlier run of this
 # same script.
 #
-# MODE=complete: mirror the orphan onto whatever the native gate job's real,
-#   terminal conclusion actually is (success or skipped). Never touches a
-#   native failure: leaving the orphan as-is or matching a real failure both
-#   correctly keep the PR blocked, and this script should never be what
-#   turns a genuinely broken PR green.
+# MODE=complete: mirror the orphan onto the native gate job's real terminal
+#   conclusion (success, skipped, failure, or cancelled). An in_progress
+#   unlock orphan keeps the required check pending, so merge queue stays on
+#   Cancel pending even after native e2e already failed. Mirroring failure
+#   cannot greenwash a broken PR; it only ends that wait. Do not use
+#   dismiss once a native result exists -- a new cancelled check-run can
+#   become the latest name and re-block a green PR.
 # MODE=dismiss: cancel unlock-time orphans, but ONLY when the native gate
 #   job has not posted a terminal result yet. Cancelling an orphan whose
 #   native gate already completed can make that cancellation the *latest*
@@ -102,8 +104,8 @@ for gate in "${GATES[@]}"; do
   native="$(native_gate_conclusion "${gate}" "${check_runs}")"
 
   if [[ "${MODE}" == "complete" ]]; then
-    if [[ "${native}" != "success" && "${native}" != "skipped" ]]; then
-      echo "Skipping ${gate}: native gate is '${native}' (not success/skipped) on ${HEAD_SHA:0:7}"
+    if [[ "${native}" != "success" && "${native}" != "skipped" && "${native}" != "failure" && "${native}" != "cancelled" ]]; then
+      echo "Skipping ${gate}: native gate is '${native}' (not terminal) on ${HEAD_SHA:0:7}"
       continue
     fi
     title="Superseded by native e2e gate job"
@@ -126,7 +128,7 @@ for gate in "${GATES[@]}"; do
     check_runs="$(fetch_check_runs)"
     current="$(native_gate_conclusion "${gate}" "${check_runs}")"
     if [[ "${MODE}" == "complete" ]]; then
-      if [[ "${current}" != "success" && "${current}" != "skipped" ]]; then
+      if [[ "${current}" != "success" && "${current}" != "skipped" && "${current}" != "failure" && "${current}" != "cancelled" ]]; then
         echo "Skipping stale ${gate} check ${id}: native gate now '${current}'"
         continue
       fi

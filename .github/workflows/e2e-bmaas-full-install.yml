@@ -298,8 +298,6 @@ jobs:
       && needs.changes.outputs.should-run == 'true'
       && needs.e2e-readiness.result == 'success'
       && needs.e2e-readiness.outputs.ready == 'true'
-      && !contains(needs.e2e-bmaas-gate.result, 'failure')
-      && !contains(needs.e2e-bmaas-gate.result, 'cancelled')
     needs: [changes, e2e-readiness, e2e-bmaas-full-install, e2e-bmaas-gate]
     runs-on: ubuntu-latest
     permissions:
