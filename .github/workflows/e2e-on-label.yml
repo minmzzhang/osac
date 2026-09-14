@@ -3,6 +3,9 @@
 # Start logic is the reusable in osac-test-infra (workflow filenames differ).
 # GITHUB_TOKEN label events do not start other workflows, so the slash-command
 # handler dispatches this file after applying e2e-ready.
+# test-infra e2e-start skips Checks API gate invalidation when every caller
+# would skip rerun (expensive already active/green), so lgtm during an
+# in-flight CodeRabbit full-install does not leave merge-blocking orphans.
 name: E2E on unlock label
 
 on:
