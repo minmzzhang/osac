@@ -3,10 +3,10 @@
 # Start logic is the reusable in osac-test-infra (workflow filenames differ).
 # GITHUB_TOKEN label events do not start other workflows, so the slash-command
 # handler dispatches this file after applying e2e-ready.
-# test-infra e2e-start skips Checks API gate invalidation when every caller
-# would skip rerun (expensive already active/green), or when the starter run
-# is not on the PR SHA (/e2e-ready dispatch). Unbound posts land on unrelated
-# suites (ok-to-test cleanup). Cost-gate labels are lgtm / e2e-ready only.
+# test-infra e2e-start never POSTs in_progress e2e-*-gate Checks API
+# placeholders (they land on auto-queue / ok-to-test and block merge).
+# Native full-install e2e-*-gate jobs report; until then required gates
+# stay pending. Cost-gate labels are lgtm / e2e-ready only.
 name: E2E on unlock label
 
 on:
