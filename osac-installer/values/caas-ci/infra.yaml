@@ -31,6 +31,9 @@ keycloak:
   # adminPassword: ${KC_ADMIN_PASSWORD}
   # devFixtures:
   #   enabled: false
+  # Helm does not expand shell variables in YAML. If enabling these keys,
+  # generate a git-ignored local file with expanded values before Helm reads it:
+  # envsubst < values/caas-ci/infra.yaml > my-infra-values.yaml
   # Optional hostname override. Set these in a local values overlay when
   # needed; do not commit environment-specific hostnames here:
   # hostname: keycloak-keycloak.apps.<cluster-domain>
