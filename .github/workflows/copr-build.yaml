@@ -12,22 +12,21 @@
 # the License.
 #
 
-# Replaces the Copr webhook that was configured on the old standalone
-# fulfillment-service repository. That repo had a GitHub webhook pointing
-# at Copr's ingestion endpoint; Copr cloned the repo and ran
-# .copr/Makefile -> srpm.sh to produce an SRPM, then built the RPM.
+# Ask Copr to rebuild the osac-cli SCM package when fulfillment-service changes
+# land on main or a component release tag is pushed. The package-specific
+# custom webhook URL selects osac-cli directly; Copr uses the source settings
+# stored on the package (currently the monorepo's main branch).
 #
-# The monorepo has no such webhook, so this workflow simulates the same
-# trigger by POSTing to the Copr webhook URL whenever fulfillment-service
-# code lands on main or a new fulfillment-service release tag is pushed.
+# A custom webhook requests a rebuild of the configured source. It does not
+# pin the build to the GitHub event's SHA or tag.
 #
 # Required repository secrets:
-#   COPR_WEBHOOK_URL  -- the full Copr webhook endpoint, e.g.
-#       https://copr.fedorainfracloud.org/webhooks/github/<id>/<uuid>/
+#   COPR_CUSTOM_WEBHOOK_URL  -- the package-specific Copr custom webhook URL,
+#       e.g. https://copr.fedorainfracloud.org/webhooks/custom/<id>/<uuid>/osac-cli/
 #
 # The Copr project's SCM source settings must point at osac-project/osac
-# (the monorepo) with subdirectory fulfillment-service/.copr so that
-# `make -f <clone>/.copr/Makefile srpm` works after clone.
+# (the monorepo), with subdirectory fulfillment-service and spec file
+# .copr/osac-cli.spec.
 
 name: Trigger Copr RPM build
 
@@ -58,63 +57,25 @@ jobs:
     steps:
       - name: Notify Copr
         env:
-          COPR_WEBHOOK_URL: ${{ secrets.COPR_WEBHOOK_URL }}
+          COPR_CUSTOM_WEBHOOK_URL: ${{ secrets.COPR_CUSTOM_WEBHOOK_URL }}
         run: |
-          if [[ -z "${COPR_WEBHOOK_URL}" ]]; then
-            echo "::error::COPR_WEBHOOK_URL secret is not set"
+          if [[ -z "${COPR_CUSTOM_WEBHOOK_URL}" ]]; then
+            echo "::error::COPR_CUSTOM_WEBHOOK_URL secret is not set"
             exit 1
           fi
 
-          # Copr uses the changed paths in commits[] to decide whether this
-          # SCM package should be rebuilt. Keep those paths from the original
-          # GitHub push event; omitting commits[] makes the webhook return 200
-          # without submitting any builds.
-          commits=$(jq -c '
-            [.commits[]? | {
-              added: (.added // []),
-              modified: (.modified // []),
-              removed: (.removed // [])
-            }]
-          ' "${GITHUB_EVENT_PATH}")
-
-          # Copr is configured to follow main. Its webhook matcher checks ref
-          # against that branch, then checks out after. This also supports
-          # release-tag and manual runs, where the target SHA still identifies
-          # the exact source revision to build.
-          ref="refs/heads/main"
-
-          # The package is configured with fulfillment-service as its
-          # subdirectory. Trigger a matching path for manual/tag runs and for
-          # changes to the root .copr wrapper, which Copr's path matcher would
-          # otherwise ignore.
-          if [[ "${GITHUB_EVENT_NAME}" != "push" || "${GITHUB_REF}" != "refs/heads/main" ]]; then
-            commits='[{"added":[],"modified":["fulfillment-service/.copr/Makefile"],"removed":[]}]'
-          elif [[ "${commits}" == "[]" ]]; then
-            commits='[{"added":[],"modified":["fulfillment-service/.copr/Makefile"],"removed":[]}]'
-          elif jq -e '
-            [.commits[]? | (.added[]?, .modified[]?, .removed[]?)]
-            | any(startswith(".copr/"))
-          ' "${GITHUB_EVENT_PATH}" >/dev/null; then
-            commits=$(jq -c '.[0].modified += ["fulfillment-service/.copr/Makefile"]' <<< "${commits}")
+          if [[ "${COPR_CUSTOM_WEBHOOK_URL}" != https://copr.fedorainfracloud.org/webhooks/custom/*/osac-cli/ ]]; then
+            echo "::error::COPR_CUSTOM_WEBHOOK_URL must be the osac-cli custom webhook URL from Copr"
+            exit 1
           fi
 
-          # POST a GitHub-push-event-shaped payload to Copr. Copr uses
-          # clone_url, ref, after, and commits[] to select and build the SCM
-          # package.
-          payload=$(jq -n \
-            --arg ref "${ref}" \
-            --arg after "${GITHUB_SHA}" \
-            --argjson commits "${commits}" \
-            --arg clone_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" \
-            --arg full_name "${GITHUB_REPOSITORY}" \
-            --arg html_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
-            '{ref: $ref, after: $after, commits: $commits, repository: {clone_url: $clone_url, full_name: $full_name, html_url: $html_url}}')
-          response=$(curl --fail-with-body --max-time 30 -s -o response.txt -w "%{http_code}" \
-            -X POST \
-            -H "Content-Type: application/json" \
-            -H "X-GitHub-Event: push" \
-            -d "${payload}" \
-            "${COPR_WEBHOOK_URL}")
+          # The custom webhook requires POST. It selects osac-cli from the URL
+          # and triggers a rebuild using the SCM source configured in Copr.
+          response=$(curl --silent --show-error --max-time 30 \
+            --output response.txt \
+            --write-out "%{http_code}" \
+            --request POST \
+            "${COPR_CUSTOM_WEBHOOK_URL}")
 
           echo "Copr responded with HTTP ${response}"
 
@@ -129,4 +90,4 @@ jobs:
             exit 1
           fi
 
-          echo "Copr accepted the webhook request; build scheduling is handled asynchronously"
+          echo "Copr accepted the osac-cli rebuild request; verify the build in the Copr project"
