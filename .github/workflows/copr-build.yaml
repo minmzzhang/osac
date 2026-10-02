@@ -85,8 +85,8 @@ jobs:
           fi
 
           response_body=$(cat response.txt)
-          if [[ "${response_body}" != "OK" ]]; then
-            echo "::error::Copr returned HTTP ${response} with an unexpected response body"
+          if [[ ! "${response_body}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Copr returned HTTP ${response} without a numeric build ID"
             exit 1
           fi
 
