@@ -125,7 +125,7 @@ jobs:
 
           response_body=$(cat response.txt)
           if [[ "${response_body}" != "OK" ]]; then
-            echo "::error::Copr returned HTTP ${response} with an unexpected response body: ${response_body:0:200}"
+            echo "::error::Copr returned HTTP ${response} with an unexpected response body"
             exit 1
           fi
 
