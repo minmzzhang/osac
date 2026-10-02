@@ -101,6 +101,16 @@ jobs:
       author_association: ${{ steps.resolve.outputs.author_association }}
       is_fork: ${{ steps.resolve.outputs.is_fork }}
     steps:
+      - name: Require workflow dispatches to use main
+        shell: bash
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if [[ "${DISPATCH_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Manual E2E dispatches must target the trusted main ref."
+            exit 1
+          fi
+
       - name: Resolve PR context from the base repository
         id: resolve
         env:
@@ -312,7 +322,8 @@ jobs:
     if: >-
       always()
       && (needs.resolve-dispatch.result == 'success'
-          || needs.resolve-dispatch.result == 'skipped')
+          || (needs.resolve-dispatch.result == 'skipped'
+              && github.event_name != 'workflow_dispatch'))
       && needs.changes.result == 'success'
       && needs.changes.outputs.should-run == 'true'
       && needs.changes.outputs.vmaas-exclusive-skip != 'true'
