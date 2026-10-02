@@ -19,7 +19,7 @@ CLI for the Open Sovereign AI Cloud platform
 %build
 cd fulfillment-service
 go build \
--ldflags="-X github.com/osac-project/fulfillment-service/internal/version.id=%{version}" \
+-ldflags="-X github.com/osac-project/osac/fulfillment-service/internal/version.id=%{version}" \
 ./cmd/osac
 
 %install
