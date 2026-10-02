@@ -48,18 +48,18 @@ version=$(
 # Calculate the date for the changelog entry in the format required by RPM:
 date=$(date +'%a %b %d %Y')
 
-# Create the tarball. `git archive` has no pathspec-based way to scope to a subdirectory *and* flatten it to the
-# archive root in one step -- `HEAD:fulfillment-service` (a subtree, not a full-tree pathspec) gives the scoping,
-# archiving fulfillment-service/ as if it were the repo root, so %build/%install's bare `cmd/osac`, `go.mod` etc.
-# paths resolve correctly instead of everything (including every other component) landing in the tarball. But
-# fulfillment-service/LICENSE was deleted as a redundant duplicate when its root files were consolidated into the
-# mono-repo's own LICENSE (see OSAC-1733), so that subtree archive alone would be missing the %license file the spec
-# requires -- assemble the tarball in a scratch directory instead, adding the root LICENSE back in.
+# Create the tarball with the monorepo layout intact. fulfillment-service/go.mod uses local replace directives for
+# sibling modules, so the RPM build needs those modules at their original relative paths. Archive only the required
+# component and replacement module paths rather than the entire monorepo. fulfillment-service/LICENSE was deleted as
+# a redundant duplicate when its root files were consolidated into the monorepo's own LICENSE (see OSAC-1733), so add
+# the root LICENSE back for the spec.
 workdir="$(mktemp -d)"
 trap 'rm -rf "${workdir}"' EXIT
 extract_dir="${workdir}/${name}-${version}"
 mkdir -p "${extract_dir}"
-git -C "${repo_root}" archive "HEAD:fulfillment-service" | tar -x -C "${extract_dir}"
+git -C "${repo_root}" archive HEAD \
+  fulfillment-service proto bare-metal-fulfillment-operator osac-operator/api \
+  | tar -x -C "${extract_dir}"
 cp "${repo_root}/LICENSE" "${extract_dir}/LICENSE"
 tar -czf "${outdir}/${name}-${version}.tar.gz" -C "${workdir}" "${name}-${version}"
 
