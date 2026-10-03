@@ -47,14 +47,16 @@ while IFS= read -r tag; do
   release_version="${tag#fulfillment-service/v}"
   tag_commit=$(git -C "${repo_root}" rev-parse "${tag}^{commit}")
   baseline="${tag_commit}"
+  baseline_is_tag_commit=true
 
   if ! git -C "${repo_root}" merge-base --is-ancestor "${baseline}" "${repo_head}"; then
     baseline=$(git -C "${repo_root}" rev-parse "${tag_commit}^" 2>/dev/null || true)
+    baseline_is_tag_commit=false
   fi
 
   if [[ -n "${baseline}" ]] && git -C "${repo_root}" merge-base --is-ancestor "${baseline}" "${repo_head}"; then
     commit_count=$(git -C "${repo_root}" rev-list --count "${baseline}..${repo_head}")
-    if (( commit_count > 0 )); then
+    if (( commit_count > 0 )) || [[ "${baseline_is_tag_commit}" == false ]]; then
       version="${release_version}^${commit_count}.g$(git -C "${repo_root}" rev-parse --short "${repo_head}")"
     else
       version="${release_version}"
