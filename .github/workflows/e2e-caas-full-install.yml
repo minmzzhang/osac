@@ -126,6 +126,17 @@ jobs:
         run: |
           set -euo pipefail
 
+          # PR-less dispatch on main: run against github.repository / github.sha
+          # (same as pre-resolve-dispatch). Hints require a PR number.
+          if [[ -z "${PR_NUMBER}" ]]; then
+            if [[ -n "${INPUT_PR_REPOSITORY}${INPUT_PR_REF}${INPUT_PR_SHA}${INPUT_FORK_PR_AUTHOR}${INPUT_FORK_PR_ASSOCIATION}" ]]; then
+              echo "::error::PR identity hints require pr-number."
+              exit 1
+            fi
+            printf 'test_suite=%s\n' "${EXPLICIT_SUITE:-caas/sanity}" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
           if [[ ! "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::pr-number must be a positive integer."
             exit 1
@@ -427,7 +438,7 @@ jobs:
           || needs.changes.outputs.should-run != 'true'
           || needs.e2e-readiness.result != 'success'
           || needs.e2e-readiness.outputs.ready == 'true')
-    needs: [changes, e2e-readiness, e2e-caas-full-install]
+    needs: [changes, e2e-readiness, resolve-dispatch, e2e-caas-full-install]
     runs-on: ubuntu-latest
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
@@ -435,6 +446,7 @@ jobs:
           echo "Upstream job results:"
           echo "  changes: ${{ needs.changes.result }}"
           echo "  e2e-readiness: ${{ needs.e2e-readiness.result }}"
+          echo "  resolve-dispatch: ${{ needs.resolve-dispatch.result }}"
           echo "  e2e-caas-full-install: ${{ needs.e2e-caas-full-install.result }}"
           echo ""
           echo "One or more upstream jobs failed or were cancelled."
