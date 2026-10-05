@@ -126,6 +126,17 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Reject multiline/unsafe suite values before writing GITHUB_OUTPUT
+          # (a newline can inject extra head_repo=/head_sha= keys).
+          emit_suite() {
+            local suite=$1
+            if [[ ! "${suite}" =~ ^(caas|caas/(sanity|regression|serial))$ ]]; then
+              echo "::error::Unsupported or unsafe test-suite value."
+              exit 1
+            fi
+            printf 'test_suite=%s\n' "${suite}" >>"${GITHUB_OUTPUT}"
+          }
+
           # PR-less dispatch on main: run against github.repository / github.sha
           # (same as pre-resolve-dispatch). Hints require a PR number.
           if [[ -z "${PR_NUMBER}" ]]; then
@@ -133,7 +144,7 @@ jobs:
               echo "::error::PR identity hints require pr-number."
               exit 1
             fi
-            printf 'test_suite=%s\n' "${EXPLICIT_SUITE:-caas/sanity}" >>"${GITHUB_OUTPUT}"
+            emit_suite "${EXPLICIT_SUITE:-caas/sanity}"
             exit 0
           fi
 
@@ -198,8 +209,8 @@ jobs:
             printf 'author=%s\n' "${author}"
             printf 'author_association=%s\n' "${association}"
             printf 'is_fork=%s\n' "${is_fork}"
-            printf 'test_suite=%s\n' "${test_suite}"
           } >>"${GITHUB_OUTPUT}"
+          emit_suite "${test_suite}"
 
   # merge_group only: cancel a superseded run for THIS PR's queue entry.
   #
