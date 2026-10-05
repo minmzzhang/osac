@@ -172,7 +172,11 @@ jobs:
           head_sha=$(jq -r '.head.sha' <<<"${pr_json}")
           author=$(jq -r '.user.login' <<<"${pr_json}")
           association=$(jq -r '.author_association' <<<"${pr_json}")
-          is_fork=$(jq -r '.head.repo.fork' <<<"${pr_json}")
+          if [[ "${head_repo}" != "${GITHUB_REPOSITORY}" ]]; then
+            is_fork=true
+          else
+            is_fork=false
+          fi
 
           assert_hint() {
             local name="$1" provided="$2" resolved="$3"
