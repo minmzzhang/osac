@@ -37,4 +37,4 @@ The AAP bootstrap job runs as a post-install hook. To monitor its progress:
 
 To upgrade the deployment:
 
-  helm upgrade {{ .Release.Name }} <chart-path> -n {{ .Release.Namespace }} -f <values-file>
+  helm upgrade {{ .Release.Name }} <chart-path> -n {{ .Release.Namespace }} -f <values-file> --force-conflicts

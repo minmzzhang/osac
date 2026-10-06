@@ -117,6 +117,8 @@ helm upgrade --install osac-infra ./charts/osac-infra \
     --wait-for-jobs --timeout 30m
 
 # Phase 2: the OSAC platform itself
+# Helm 4: --force-conflicts is required because the AAP operator takes
+# field ownership of app.kubernetes.io/managed-by on the osac-aap CR.
 helm dependency update ./charts/osac
 helm upgrade --install osac ./charts/osac \
     -n "$NS" --create-namespace \
@@ -124,6 +126,7 @@ helm upgrade --install osac ./charts/osac \
     --set global.clusterDomain="$DOMAIN" \
     --set service.externalHostname="fulfillment-api-$NS.$DOMAIN" \
     --set service.internalHostname="fulfillment-internal-api-$NS.$DOMAIN" \
+    --force-conflicts \
     --wait --timeout 40m
 ```
 
@@ -319,6 +322,7 @@ immutable `ConfigMap`. Update it using this sequence:
        --set global.clusterDomain="$DOMAIN" \
        --set service.externalHostname="fulfillment-api-$NS.$DOMAIN" \
        --set service.internalHostname="fulfillment-internal-api-$NS.$DOMAIN" \
+       --force-conflicts \
        --wait --timeout 40m
    ```
 

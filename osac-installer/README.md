@@ -373,9 +373,14 @@ oc logs -f job/osac-aap-bootstrap -n <project-name>
 helm upgrade osac charts/osac/ \
   --namespace <project-name> \
   --values values/<project-name>/values.yaml \
+  --force-conflicts \
   --timeout 40m \
   --wait
 ```
+
+On Helm 4, `--force-conflicts` is required: the AAP operator takes field
+ownership of `app.kubernetes.io/managed-by` on the `osac-aap` CR. Omit the
+flag on Helm 3.
 
 The post-upgrade hook re-publishes cluster templates automatically. This is
 idempotent - existing templates are updated via PATCH while new templates

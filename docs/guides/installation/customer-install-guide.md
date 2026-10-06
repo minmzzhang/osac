@@ -436,6 +436,11 @@ Use this procedure when the cluster already meets the prerequisites.
   bootstrap job takes 10 to 40 minutes. Helm does not return until it and, for
   CaaS, the `osac-publish-templates` hook have finished.
 
+  On Helm 4, later `helm upgrade` (or re-running `helm upgrade --install`)
+  must include `--force-conflicts`. The AAP operator takes field ownership of
+  `app.kubernetes.io/managed-by` on the `osac-aap` custom resource, and Helm
+  4 server-side apply fails without that flag. Helm 3 does not accept it.
+
 **Verification**
 
 - Complete [Section 7](#7-verifying-the-installation).
@@ -1303,6 +1308,11 @@ $ oc get csr | grep -c Pending
   ```console
   $ oc label aap osac-aap -n <namespace> app.kubernetes.io/managed-by=Helm --overwrite
   ```
+
+- a field-ownership conflict on `app.kubernetes.io/managed-by` owned by the
+  AAP operator (Helm 4): add `--force-conflicts` to the `helm upgrade`
+  command. The operator takes ownership of that field on the `osac-aap`
+  custom resource after install.
 
 ### 11.8 The `osac-aap-bootstrap` job fails
 
