@@ -313,7 +313,8 @@ immutable `ConfigMap`. Update it using this sequence:
    oc delete configmap osac-csi-fulfillment-config -n osac-csi
    ```
 
-3. Immediately reapply the updated values so Helm recreates the `ConfigMap`:
+3. Immediately reapply the updated values so Helm recreates the `ConfigMap`.
+   The command below is Helm 4; omit `--force-conflicts` on Helm 3.
 
    ```bash
    helm upgrade --install osac ./charts/osac \
