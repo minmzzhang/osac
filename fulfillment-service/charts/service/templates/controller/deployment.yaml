@@ -161,6 +161,7 @@ spec:
         {{ end }}
         - start
         - controller
+        - --sync={{ if and (hasKey (.Values.controller | default dict) "sync") (ne .Values.controller.sync nil) }}{{ .Values.controller.sync }}{{ else }}true{{ end }}
         - --log-level={{ .Values.log.level }}
         - --log-headers={{ .Values.log.headers }}
         - --log-bodies={{ .Values.log.bodies }}

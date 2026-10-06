@@ -541,8 +541,9 @@ func subnetProvisioningJobsExtractor(obj client.Object) []v1alpha1.JobStatus {
 // resolved targets via RunMultiTargetProvisioningLifecycle, always tagging the fabric
 // target's jobs "fabric". Keeping the fabric target consistently tagged, whether or not
 // a k8s target is present, preserves its job history across dispatcher changes. When
-// both managers are dispatched, k8s waits for current fabric success and inherits only
-// l2_vni and l3_vni. Targets without dependencies retain independent retries. The Subnet
+// both managers are dispatched, k8s waits for fabric success and inherits l2_vni, l3_vni,
+// and fabric_reserved_range from the Subnet-namespace fabric output ConfigMap. Targets
+// without dependencies retain independent retries. The Subnet
 // reaches Ready only once every resolved target's latest job succeeds at the current
 // desired config version.
 func (r *SubnetReconciler) handleProvisioning(ctx context.Context, subnet *v1alpha1.Subnet, plan *dispatcher.DispatchPlan) (ctrl.Result, error) {
@@ -559,14 +560,16 @@ func (r *SubnetReconciler) handleProvisioning(ctx context.Context, subnet *v1alp
 		// VirtualNetwork spec's annotation rather than a resolved DispatchPlan. Job
 		// history for these Subnets has always been untargeted, so keep using the
 		// fully single-target lifecycle unchanged.
+		onProvisioningFailure := func(message string) {
+			subnet.Status.Phase = v1alpha1.SubnetPhaseFailed
+			setReadyConditionFailed(&subnet.Status.Conditions, message)
+		}
 		result, err = provisioning.RunProvisioningLifecycle(ctx, r.ProvisioningProvider, subnet,
 			&provisioning.State{Jobs: &subnet.Status.ProvisioningJobs, DesiredConfigVersion: subnet.Status.DesiredConfigVersion},
 			r.MaxJobHistory, r.StatusPollInterval,
 			&provisioning.PollCallbacks{
-				OnFailed: func(message string) {
-					subnet.Status.Phase = v1alpha1.SubnetPhaseFailed
-					setReadyConditionFailed(&subnet.Status.Conditions, message)
-				},
+				OnFailed:      onProvisioningFailure,
+				OnOutputError: onProvisioningFailure,
 				OnSuccess: func(_ provisioning.ProvisionStatus) {
 					subnet.Status.Phase = v1alpha1.SubnetPhaseReady
 					setReadyConditionTrue(&subnet.Status.Conditions)
@@ -608,11 +611,21 @@ func (r *SubnetReconciler) handleProvisioning(ctx context.Context, subnet *v1alp
 			}
 		}
 
+		fabricCallbacks := &provisioning.PollCallbacks{
+			OnFailed:      onFailedFor(fabricName),
+			OnOutputError: onFailedFor(fabricName),
+			OnSuccess:     onSuccess,
+		}
+		fabricProvider := provisioning.ProvisioningProvider(newDispatchTargetProvider(r.ProvisioningProvider, fabricTarget.Manager.Name))
+		if k8sTarget != nil {
+			fabricCallbacks.OnSuccessWithExtraVars = func(provisioning.ProvisionStatusWithExtraVars) error { return nil }
+			fabricProvider = newFabricOutputProvider(fabricProvider, r.Client)
+		}
 		targets := []provisioning.JobTarget{
 			{
 				Name:           fabricName,
-				Provider:       newDispatchTargetProvider(r.ProvisioningProvider, fabricTarget.Manager.Name),
-				Callbacks:      &provisioning.PollCallbacks{OnFailed: onFailedFor(fabricName), OnSuccess: onSuccess},
+				Provider:       fabricProvider,
+				Callbacks:      fabricCallbacks,
 				CheckAPIServer: checkAPIServerFor(fabricName),
 				// Subnet was fabric-only (single, untargeted job history) before the
 				// dispatcher path existed, so fabric inherits any pre-existing
@@ -630,7 +643,7 @@ func (r *SubnetReconciler) handleProvisioning(ctx context.Context, subnet *v1alp
 			})
 			dependencies[k8sName] = provisioning.JobTargetDependency{
 				DependsOn:         fabricName,
-				RequiredExtraVars: []string{"l2_vni", "l3_vni"},
+				RequiredExtraVars: []string{"l2_vni", "l3_vni", "fabric_reserved_range"},
 			}
 		}
 
