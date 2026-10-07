@@ -229,8 +229,9 @@ Touched-area requirements: [component guide](../osac-operator/AGENTS.md#integrat
 
 ### Bare-metal worker coverage ([DEV])
 
-All worker persistence specs share `internal/controller/suite_test.go` with the
-other operator tests. They are `internal/controller/baremetalworker_*_test.go`,
+Worker Unit specs use the Ginkgo BareMetalWorker Suite and descriptive behavior
+names; RBAC Contract specs use the Operator Contract Suite. All worker persistence
+specs share `internal/controller/suite_test.go` with the other operator tests. They are `internal/controller/baremetalworker_*_test.go`,
 labelled `baremetalworker`; there is no separate acceptance suite or reusable
 external-environment framework. The fulfillment/ignition doubles are private to
 that test binary. Explicit CR fixtures write only the evidence the worker reads.
@@ -241,7 +242,7 @@ CAP-Agent, HyperShift, BMF, AAP or hardware provisioning.
 | Behavior / cases | Unit location under `internal/controller/baremetalworker/` | Existing Controller Suite location under `internal/controller/` | Real boundary and limits |
 |---|---|---|---|
 | Reservation, identity and allocation checkpoints; R01/R02 | `nodesets_test.go`, `bmi_recovery_test.go`, `bmi_reconcile_test.go`, `worker_capacity_test.go` | `baremetalworker_reconciler_test.go`, `baremetalworker_convergence_test.go` | Real status/optimistic locking; returned IDs, lost acknowledgement, restart, delayed visibility, AlreadyExists recovery and foreign/ambiguous/deleting refusal use test-local API responses, not Postgres. |
-| Agent-before-BMI cleanup, retirement and finalization; R03 | `cleanup_test.go`, `retry_test.go`, `worker_teardown_test.go` | `baremetalworker_convergence_test.go`, `baremetalworker_reconciler_test.go` | Real Agent Delete UID-precondition rejection; delayed/lost BMI deletion, once-only retry, fresh destructive reads, unrecorded-ID recovery and bound-worker retention use explicit fixture completion. |
+| Agent-before-BMI cleanup, retirement and finalization; R03 | `cleanup_test.go`, `retry_test.go`, `worker_teardown_test.go`, `reservation_cleanup_test.go` | `baremetalworker_convergence_test.go`, `baremetalworker_reconciler_test.go` | Real Agent Delete UID-precondition rejection; delayed/lost BMI deletion, once-only retry, fresh destructive reads, unrecorded-ID recovery and bound-worker retention use explicit fixture completion. |
 | Independent progress with blocked creation; R04 | `worker_reconcile_test.go`, `worker_capacity_test.go`, `retry_test.go` | `baremetalworker_convergence_test.go`, `baremetalworker_reconciler_test.go` | Real summaries persist before input errors; retirement/cleanup/binding proceed without pull secret, ignition or image; no Create/fetch is authorized by missing inputs. |
 | One invocation-local observation and phase projection; R05 | `worker_observation_test.go`, `worker_projection_test.go`, `worker_reconcile_test.go` | `baremetalworker_convergence_test.go` | Lost status after Agent patch recovers without a second patch/Create; demotion/protected history and no pre-bind Ready from stale snapshots. Read budgets exclude fresh destructive authorization. |
 | Strict shared association, selector union and UID races; R06 | `correlation_test.go`, `agent_reconcile_test.go`, `worker_projection_test.go` | `baremetalworker_reconciler_test.go`, `baremetalworker_convergence_test.go` | Real Agent UIDs and shared-selector deduplication; ambiguous/foreign/malformed evidence authorizes no patch/delete/readiness; restart reconstructs durable binding. No Assisted Service controller. |
@@ -258,8 +259,6 @@ go test ./internal/controller/baremetalworker -count=1
 go test -race ./internal/controller/baremetalworker -count=1
 KUBEBUILDER_ASSETS="$PWD/bin/k8s/1.31.0-linux-amd64" \
   go test ./internal/controller -count=1 -ginkgo.label-filter=baremetalworker
-KUBEBUILDER_ASSETS="$PWD/bin/k8s/1.31.0-linux-amd64" \
-  go test ./internal/controller -count=1 -ginkgo.focus='R0[1-9]-|R10-'
 ```
 
 The focused commands use existing Kubernetes 1.31.0 binaries; `make test`
@@ -271,6 +270,20 @@ errors and dependency/backoff results propagate unchanged. This is a fixture
 termination bound, not a production latency SLA. Retry deadlines advance in the
 test instead of sleeping, and protected workers cannot be resurrected by an
 Installed Agent. Fulfillment dependency state remains isolated per test.
+
+Reservation cleanup specs in `baremetalworker_convergence_test.go` exercise early
+deletion after reservation persistence, both sides of the real optimistic Create-intent race,
+restart after intent persistence before the external call, legacy ID-less
+retention, and lost acknowledgement cleanup with delayed List visibility.
+`reservation_cleanup_test.go` adds Unit checks for the same safety boundaries
+and resetting create state only after confirmed old-incarnation cleanup.
+Only explicit `Reserved` status is cancellable without provider evidence;
+`Attempted` and omitted legacy state stay conservative. Interruption after
+intent persistence before Create remains ambiguous and may block deletion:
+there is no provider-side atomic resolve/cancel protocol in this change.
+Mixed-version execution with an older controller that ignores create state is
+not safe; deploy the generated CRD and drain older worker controllers before
+using reservation cancellation. The deployed early-delete E2E remains unchanged.
 
 ### Coverage gaps and ownership
 
@@ -452,13 +465,19 @@ coverage is tracked under
 
 ### Focused CaaS natural-teardown boundary
 
+CaaS sanity retains the single-nodepool lifecycle and fast deletion feedback
+scenario. Two-node-set isolation runs in
+`caas/regression/test_cluster_node_sets.py`; explicit version resolution and
+invalid-version rejection are consolidated in
+`caas/regression/test_cluster_version.py`.
+
 Both `test_cluster_create` and `test_cluster_create_with_two_node_sets` use the
 same natural teardown assertions. The two-node-set scenario additionally
 checks ready worker aggregates, installed Agents, and per-NodeSet
 NodePool isolation. Unit regressions additionally cover distinct NodeSets
 sharing one BMIT; that same-profile case is not exercised by this deployed
 scenario. Run that [QE] E2E with
-`uv run pytest -n 0 tests/e2e/caas/sanity/test_cluster_create.py::test_cluster_create_with_two_node_sets`;
+`uv run pytest -n 0 tests/e2e/caas/regression/test_cluster_node_sets.py::test_cluster_create_with_two_node_sets`;
 it requires the same source-pinned environment described below and enough
 available BMHs for both worker sets.
 
