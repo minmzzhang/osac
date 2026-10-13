@@ -869,7 +869,7 @@ Create them in the order below.
 | Secret `trident-csi` and the Trident CRDs | TLS for the controller, and the persistence CRDs the chart does not install | Before the controller |
 | Deployment `trident-csi-controller` | OSAC vendor controller from the `csi-backends` chart | After the Secret and CRDs |
 | DaemonSet `trident-node-linux` | Official Trident node manifest, patched so it can mount NFS | After the controller is Ready |
-| Trident backend `ontap-nas-economy` | Tells Trident which SVM and data LIF to use | After a worker mounts the export |
+| Trident backend `ontap-nas-economy` | Tells Trident which SVM and data LIF to use | After every worker mounts the export |
 | Tenant and `tenant-admin` | Break-glass user created with the tenant. VMs require `tenant-admin`. | Before the StorageClass |
 | StorageClass `ontap-nas-${TENANT}` | Class for that tenant's PVCs | After the Trident backend is online |
 
@@ -890,8 +890,8 @@ Create them in the order below.
   in values files, source control, or this guide.
 - The examples use `OSAC_NAMESPACE`, `TENANT`, `ONTAP_MANAGEMENT_ENDPOINT`
   (bare host, no `https://` prefix), `ONTAP_SVM`, `NFS_DATA_LIF`,
-  `NFS_EXPORT_PATH`, `ONTAP_USERNAME`, `ONTAP_PASSWORD`, `WORKER_NODE`,
-  and `GUEST_PASSWORD`.
+  `NFS_EXPORT_PATH`, `ONTAP_USERNAME`, `ONTAP_PASSWORD`, and
+  `GUEST_PASSWORD`.
 
 **Procedure**
 
@@ -942,7 +942,9 @@ Create them in the order below.
    [`csi-backends/README.md`](https://github.com/osac-project/osac/blob/main/osac-csi-driver/charts/csi-backends/README.md).
    Sign each certificate with its own serial. A second `-CAcreateserial` in
    the same directory skips the client certificate. Give the server
-   certificate the SAN `DNS:trident-csi`.
+   certificate the SAN `DNS:trident-csi`. The client certificate common name
+   must be `trident-node`. The controller accepts that name on its HTTPS REST
+   port.
 
    ```bash
    oc create namespace osac-csi-backends --dry-run=client -o yaml | oc apply -f -
@@ -964,7 +966,7 @@ Create them in the order below.
      -CAkey "$TMPDIR/caKey" -set_serial 1 -out "$TMPDIR/serverCert" \
      -days 3650 -sha256 -extfile "$TMPDIR/server.ext"
    openssl genrsa -out "$TMPDIR/clientKey" 2048
-   openssl req -new -key "$TMPDIR/clientKey" -subj '/CN=trident-client' \
+   openssl req -new -key "$TMPDIR/clientKey" -subj '/CN=trident-node' \
      -out "$TMPDIR/client.csr"
    openssl x509 -req -in "$TMPDIR/client.csr" -CA "$TMPDIR/caCert" \
      -CAkey "$TMPDIR/caKey" -set_serial 2 -out "$TMPDIR/clientCert" \
@@ -1020,19 +1022,64 @@ Create them in the order below.
    (`vendors.trident.enabled`). That DaemonSet can provision a volume and
    still fail to mount NFS.
 5. After the controller is Ready, install the official Trident node
-   DaemonSet. Patch `setup/trident-daemonset.yaml` for the
-   `osac-csi-backends` namespace, service account `trident-node-linux`, image
-   `registry.connect.redhat.com/netapp/trident:25.10.0`, and the
-   `pull-secret` from step 2. Remove the unused `trident-encryption-keys`
-   mount. The node service account and SCC are not part of the OSAC
-   distribution. A cluster administrator must review them against the
+   DaemonSet. The node service account and SCC below are not part of the
+   OSAC distribution. A cluster administrator must review them against the
    selected Trident release and the cluster SCC policy before you apply them.
    The ClusterRole `trident-be-csi-backends-trident` comes from the chart in
    step 4, so create the binding only after that apply succeeds.
 
    ```bash
-   oc apply -f /path/to/reviewed/trident-node-linux-serviceaccount.yaml
-   oc apply -f /path/to/reviewed/trident-node-linux-scc.yaml
+   cat > /tmp/trident-installer/setup/trident-node-linux-serviceaccount.yaml <<'EOF'
+   apiVersion: v1
+   kind: ServiceAccount
+   metadata:
+     name: trident-node-linux
+     namespace: osac-csi-backends
+     labels:
+       app: node.csi.trident.netapp.io
+   EOF
+   cat > /tmp/trident-installer/setup/trident-node-linux-scc.yaml <<'EOF'
+   apiVersion: security.openshift.io/v1
+   kind: SecurityContextConstraints
+   metadata:
+     annotations:
+       kubernetes.io/description: 'trident-node-linux is a clone of the privileged built-in, and is meant just for use with trident.'
+     name: trident-node-linux
+     labels:
+       app: node.csi.trident.netapp.io
+   allowHostDirVolumePlugin: true
+   allowHostIPC: true
+   allowHostNetwork: true
+   allowHostPID: true
+   allowHostPorts: false
+   allowPrivilegeEscalation: true
+   allowPrivilegedContainer: true
+   allowedCapabilities:
+   - SYS_ADMIN
+   allowedUnsafeSysctls: null
+   defaultAddCapabilities: null
+   fsGroup:
+     type: RunAsAny
+   groups: []
+   priority: null
+   readOnlyRootFilesystem: false
+   requiredDropCapabilities: null
+   runAsUser:
+     type: RunAsAny
+   seLinuxContext:
+     type: RunAsAny
+   supplementalGroups:
+     type: RunAsAny
+   users:
+   - system:serviceaccount:osac-csi-backends:trident-node-linux
+   volumes:
+   - hostPath
+   - downwardAPI
+   - projected
+   - emptyDir
+   EOF
+   oc apply -f /tmp/trident-installer/setup/trident-node-linux-serviceaccount.yaml
+   oc apply -f /tmp/trident-installer/setup/trident-node-linux-scc.yaml
    oc adm policy add-scc-to-user trident-node-linux \
      -z trident-node-linux -n osac-csi-backends
    oc adm policy add-scc-to-user privileged \
@@ -1041,29 +1088,122 @@ Create them in the order below.
      --clusterrole=trident-be-csi-backends-trident \
      --serviceaccount=osac-csi-backends:trident-node-linux \
      --dry-run=client -o yaml | oc apply -f -
-   oc delete ds trident-csi-node -n osac-csi-backends --ignore-not-found
-   oc apply -f /path/to/reviewed/trident-node-linux-osac.yaml
-   oc rollout status ds/trident-node-linux \
-     -n osac-csi-backends --timeout=180s
-   oc get csinode -o yaml | grep csi.trident.netapp.io
    ```
 
-   Confirm that the node pods are Ready and that `csi.trident.netapp.io` is
-   registered on each worker. Do not apply `setup/trident-deployment.yaml`.
-6. From a node that will run VM pods, mount the dedicated NFS export with
-   NFSv3 and confirm the mount, then unmount it. Stop here if the mount
-   fails. Do not create the Trident backend until this check succeeds.
+   Write `setup/trident-node-linux-osac.yaml` from
+   `setup/trident-daemonset.yaml` in step 3. The script sets namespace
+   `osac-csi-backends`, service account `trident-node-linux`, image
+   `registry.connect.redhat.com/netapp/trident:25.10.0`, and the
+   `pull-secret` from step 2. It removes the `trident-encryption-keys`
+   secret from the `certs` volume. That secret is not created in step 2.
+   Stop if this script exits with an error. Do not apply
+   `setup/trident-deployment.yaml`.
 
    ```bash
-   oc debug "node/${WORKER_NODE}" -- chroot /host sh -c \
-     "mkdir -p /mnt/osac-nfs-check && mount -t nfs -o nfsvers=3,sec=sys ${NFS_DATA_LIF}:${NFS_EXPORT_PATH} /mnt/osac-nfs-check && df -h /mnt/osac-nfs-check && echo ok > /mnt/osac-nfs-check/.osac-write-test && rm /mnt/osac-nfs-check/.osac-write-test && umount /mnt/osac-nfs-check"
+   python3 <<'PY'
+   from pathlib import Path
+   src = Path("/tmp/trident-installer/setup/trident-daemonset.yaml")
+   text = src.read_text()
+   meta = "metadata:\n  name: trident-node-linux\n"
+   if meta not in text:
+       raise SystemExit("expected DaemonSet metadata name trident-node-linux")
+   if "\n  namespace: osac-csi-backends\n" not in text:
+       text = text.replace(meta, meta + "  namespace: osac-csi-backends\n", 1)
+   sa = "      serviceAccount: trident-node-linux\n"
+   if sa not in text:
+       raise SystemExit("expected serviceAccount trident-node-linux")
+   if "serviceAccountName: trident-node-linux\n" not in text:
+       text = text.replace(
+           sa, sa + "      serviceAccountName: trident-node-linux\n", 1)
+   pull = "      serviceAccountName: trident-node-linux\n"
+   if "name: pull-secret" not in text:
+       text = text.replace(
+           pull,
+           pull + "      imagePullSecrets:\n      - name: pull-secret\n",
+           1,
+       )
+   lines = text.splitlines(True)
+   out = []
+   in_main = False
+   image_done = False
+   i = 0
+   while i < len(lines):
+       line = lines[i]
+       if line.strip() == "- name: trident-main":
+           in_main = True
+       elif in_main and line.startswith("      - name:"):
+           in_main = False
+       if in_main and not image_done and line.startswith("        image:"):
+           out.append(
+               "        image: registry.connect.redhat.com/netapp/trident:25.10.0\n")
+           image_done = True
+           i += 1
+           continue
+       if (line.strip() == "- secret:" and i + 1 < len(lines)
+               and lines[i + 1].strip() == "name: trident-encryption-keys"):
+           i += 2
+           continue
+       out.append(line)
+       i += 1
+   if not image_done:
+       raise SystemExit("expected a trident-main image")
+   patched = "".join(out)
+   if "trident-encryption-keys" in patched:
+       raise SystemExit("trident-encryption-keys is still present")
+   Path("/tmp/trident-installer/setup/trident-node-linux-osac.yaml").write_text(
+       patched)
+   PY
+   oc delete ds trident-csi-node -n osac-csi-backends --ignore-not-found
+   oc apply -f /tmp/trident-installer/setup/trident-node-linux-osac.yaml
+   oc rollout status ds/trident-node-linux \
+     -n osac-csi-backends --timeout=180s
+   fail=0
+   nodes=$(oc get nodes -l node-role.kubernetes.io/worker \
+     -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+   if [ -z "$nodes" ]; then
+     nodes=$(oc get nodes \
+       -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+   fi
+   for node in $nodes; do
+     if ! oc get csinode "$node" \
+         -o jsonpath='{range .spec.drivers[*]}{.name}{"\n"}{end}' \
+         | grep -qx 'csi.trident.netapp.io'; then
+       echo "csi.trident.netapp.io is not registered on ${node}"
+       fail=1
+     fi
+   done
+   test "$fail" -eq 0
    ```
 
-   The export policy must allow this node's address. If the mount or the
-   write fails, stop. Do not create the Trident backend until both succeed.
-   With `ontap-nas-economy`, Trident stores PVC qtrees in a FlexVol pool
-   that it creates. Those qtrees are not placed in this export. Do not use
-   `lun show` to verify this NFS workflow.
+   The last command fails if any worker is missing `csi.trident.netapp.io`.
+   On a cluster with no `worker` role label, it checks every node.
+6. From each node that will run VM pods, mount the dedicated NFS export with
+   NFSv3, write a file, and unmount it. Stop if any node fails. Do not create
+   the Trident backend until every node succeeds.
+
+   ```bash
+   nodes=$(oc get nodes -l node-role.kubernetes.io/worker \
+     -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+   if [ -z "$nodes" ]; then
+     nodes=$(oc get nodes \
+       -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+   fi
+   for node in $nodes; do
+     oc debug "node/${node}" -- chroot /host sh -c \
+       "mkdir -p /mnt/osac-nfs-check && mount -t nfs -o nfsvers=3,sec=sys ${NFS_DATA_LIF}:${NFS_EXPORT_PATH} /mnt/osac-nfs-check && df -h /mnt/osac-nfs-check && echo ok > /mnt/osac-nfs-check/.osac-write-test && rm /mnt/osac-nfs-check/.osac-write-test && umount /mnt/osac-nfs-check" \
+       || exit 1
+   done
+   ```
+
+   The export policy on this share must allow each node's address. The
+   Trident backend in step 7 uses export policy `default`. A successful mount
+   of this dedicated export does not prove that `default` allows these nodes.
+   Confirm that policy before you continue. This check does not mount the
+   FlexVol pool Trident creates later. Confirm that pool when the first
+   NetApp PVC is Bound, at the end of step 10. With `ontap-nas-economy`,
+   Trident stores PVC qtrees in a FlexVol pool that it creates. Those qtrees
+   are not placed in this export. Do not use `lun show` to verify this NFS
+   workflow.
 7. Create the Trident `ontap-nas-economy` backend and confirm that Trident
    reports it online. Write the JSON to a local file mode `600`. Do not
    commit that file. Applying the JSON as a Kubernetes resource does not
@@ -1075,6 +1215,7 @@ Create them in the order below.
 
    ```bash
    umask 077
+   ONTAP_BACKEND_FILE=$(mktemp)
    cat > "$ONTAP_BACKEND_FILE" <<EOF
    {
      "version": 1,
@@ -1099,10 +1240,14 @@ Create them in the order below.
      -o jsonpath='{.items[0].metadata.name}')
    oc exec -i -n osac-csi-backends "$POD" -c trident-main -- \
      tridentctl -s 127.0.0.1:8000 create backend -f - \
-     < "$ONTAP_BACKEND_FILE"
-   oc exec -n osac-csi-backends "$POD" -c trident-main -- \
-     tridentctl -s 127.0.0.1:8000 get backend
+     < "$ONTAP_BACKEND_FILE" \
+     && oc exec -n osac-csi-backends "$POD" -c trident-main -- \
+       tridentctl -s 127.0.0.1:8000 get backend \
+     && rm -f "$ONTAP_BACKEND_FILE"
    ```
+
+   The file is removed only after create and get both succeed. If create
+   fails, keep it and use a fallback below.
 
    `managementLIF` is the SVM management host from step 1. `dataLIF` is the
    NFS data LIF from step 6. See NetApp's
@@ -1119,18 +1264,35 @@ Create them in the order below.
 
    ```bash
    /tmp/trident-installer/tridentctl -s 127.0.0.1:18000 create backend \
-     -f "$ONTAP_BACKEND_FILE"
-   /tmp/trident-installer/tridentctl -s 127.0.0.1:18000 get backend
+     -f "$ONTAP_BACKEND_FILE" \
+     && /tmp/trident-installer/tridentctl -s 127.0.0.1:18000 get backend \
+     && rm -f "$ONTAP_BACKEND_FILE"
    ```
 
    If nothing in the pod listens on port 8000, REST is HTTPS on port 8443.
-   Post the same JSON with curl:
+   The controller requires the client certificate from step 2. Do not use
+   `-k`. The server certificate name is `trident-csi`, so call that host and
+   send the connection to the local port-forward.
 
    ```bash
    oc port-forward -n osac-csi-backends deploy/trident-csi-controller 18443:8443
-   curl -sk -X POST "https://127.0.0.1:18443/trident/v1/backend" \
+   ```
+
+   ```bash
+   CERTDIR=$(mktemp -d)
+   umask 077
+   for f in caCert clientCert clientKey; do
+     oc -n osac-csi-backends get secret trident-csi \
+       -o jsonpath="{.data.${f}}" | base64 -d > "${CERTDIR}/${f}"
+   done
+   curl --fail --cacert "${CERTDIR}/caCert" \
+     --cert "${CERTDIR}/clientCert" --key "${CERTDIR}/clientKey" \
+     --resolve "trident-csi:18443:127.0.0.1" \
+     -X POST "https://trident-csi:18443/trident/v1/backend" \
      -H 'Content-Type: application/json' \
-     --data-binary @"$ONTAP_BACKEND_FILE"
+     --data-binary @"$ONTAP_BACKEND_FILE" \
+     && rm -f "$ONTAP_BACKEND_FILE"
+   rm -rf "$CERTDIR"
    ```
 8. Create the tenant on the private administrator session from step 1, if
    it does not already exist. A public session cannot create a tenant. The
