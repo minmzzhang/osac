@@ -888,7 +888,7 @@ Create them in the order below.
 - Keep ONTAP credentials in the approved secret manager or a protected shell
   environment. Do not put credentials, internal addresses, or access details
   in values files, source control, or this guide.
-- The examples use `OSAC_NAMESPACE`, `TENANT`, `ONTAP_MANAGEMENT_ENDPOINT`
+- The examples use `OSAC_DIR` (the `osac` checkout), `OSAC_NAMESPACE`, `TENANT`, `ONTAP_MANAGEMENT_ENDPOINT`
   (bare host, no `https://` prefix), `ONTAP_SVM`, `NFS_DATA_LIF`,
   `NFS_EXPORT_PATH`, `ONTAP_USERNAME`, `ONTAP_PASSWORD`, and
   `GUEST_PASSWORD`.
@@ -954,33 +954,33 @@ Create them in the order below.
            | .metadata.namespace="osac-csi-backends"' \
      | oc apply -f -
    oc -n osac-csi-backends delete secret trident-csi --ignore-not-found
-   TMPDIR=$(mktemp -d)
-   openssl genrsa -out "$TMPDIR/caKey" 2048
-   openssl req -new -x509 -key "$TMPDIR/caKey" -sha256 -days 3650 \
-     -subj '/CN=trident-ca' -out "$TMPDIR/caCert"
-   openssl genrsa -out "$TMPDIR/serverKey" 2048
-   openssl req -new -key "$TMPDIR/serverKey" -subj '/CN=trident-csi-controller' \
-     -out "$TMPDIR/server.csr"
-   printf 'subjectAltName=DNS:trident-csi\n' > "$TMPDIR/server.ext"
-   openssl x509 -req -in "$TMPDIR/server.csr" -CA "$TMPDIR/caCert" \
-     -CAkey "$TMPDIR/caKey" -set_serial 1 -out "$TMPDIR/serverCert" \
-     -days 3650 -sha256 -extfile "$TMPDIR/server.ext"
-   openssl genrsa -out "$TMPDIR/clientKey" 2048
-   openssl req -new -key "$TMPDIR/clientKey" -subj '/CN=trident-node' \
-     -out "$TMPDIR/client.csr"
-   openssl x509 -req -in "$TMPDIR/client.csr" -CA "$TMPDIR/caCert" \
-     -CAkey "$TMPDIR/caKey" -set_serial 2 -out "$TMPDIR/clientCert" \
+   TRIDENT_CERT_DIR=$(mktemp -d)
+   openssl genrsa -out "$TRIDENT_CERT_DIR/caKey" 2048
+   openssl req -new -x509 -key "$TRIDENT_CERT_DIR/caKey" -sha256 -days 3650 \
+     -subj '/CN=trident-ca' -out "$TRIDENT_CERT_DIR/caCert"
+   openssl genrsa -out "$TRIDENT_CERT_DIR/serverKey" 2048
+   openssl req -new -key "$TRIDENT_CERT_DIR/serverKey" -subj '/CN=trident-csi-controller' \
+     -out "$TRIDENT_CERT_DIR/server.csr"
+   printf 'subjectAltName=DNS:trident-csi\n' > "$TRIDENT_CERT_DIR/server.ext"
+   openssl x509 -req -in "$TRIDENT_CERT_DIR/server.csr" -CA "$TRIDENT_CERT_DIR/caCert" \
+     -CAkey "$TRIDENT_CERT_DIR/caKey" -set_serial 1 -out "$TRIDENT_CERT_DIR/serverCert" \
+     -days 3650 -sha256 -extfile "$TRIDENT_CERT_DIR/server.ext"
+   openssl genrsa -out "$TRIDENT_CERT_DIR/clientKey" 2048
+   openssl req -new -key "$TRIDENT_CERT_DIR/clientKey" -subj '/CN=trident-node' \
+     -out "$TRIDENT_CERT_DIR/client.csr"
+   openssl x509 -req -in "$TRIDENT_CERT_DIR/client.csr" -CA "$TRIDENT_CERT_DIR/caCert" \
+     -CAkey "$TRIDENT_CERT_DIR/caKey" -set_serial 2 -out "$TRIDENT_CERT_DIR/clientCert" \
      -days 3650 -sha256
-   openssl rand -hex 16 > "$TMPDIR/aesKey"
+   openssl rand -hex 16 > "$TRIDENT_CERT_DIR/aesKey"
    oc -n osac-csi-backends create secret generic trident-csi \
-     --from-file=caKey="$TMPDIR/caKey" \
-     --from-file=caCert="$TMPDIR/caCert" \
-     --from-file=serverKey="$TMPDIR/serverKey" \
-     --from-file=serverCert="$TMPDIR/serverCert" \
-     --from-file=clientKey="$TMPDIR/clientKey" \
-     --from-file=clientCert="$TMPDIR/clientCert" \
-     --from-file=aesKey="$TMPDIR/aesKey"
-   rm -rf "$TMPDIR"
+     --from-file=caKey="$TRIDENT_CERT_DIR/caKey" \
+     --from-file=caCert="$TRIDENT_CERT_DIR/caCert" \
+     --from-file=serverKey="$TRIDENT_CERT_DIR/serverKey" \
+     --from-file=serverCert="$TRIDENT_CERT_DIR/serverCert" \
+     --from-file=clientKey="$TRIDENT_CERT_DIR/clientKey" \
+     --from-file=clientCert="$TRIDENT_CERT_DIR/clientCert" \
+     --from-file=aesKey="$TRIDENT_CERT_DIR/aesKey"
+   rm -rf "$TRIDENT_CERT_DIR"
    ```
 3. Install the Trident persistence CRDs from the official installer package.
    Do not run its controller installation.
@@ -1005,7 +1005,8 @@ Create them in the order below.
    `anyuid` SCC.
 
    ```bash
-   helm template trident-be /path/to/osac/osac-csi-driver/charts/csi-backends \
+   export OSAC_DIR=/path/to/osac
+   helm template trident-be "${OSAC_DIR}/osac-csi-driver/charts/csi-backends" \
      --namespace osac-csi-backends \
      --set namespace=osac-csi-backends \
      --set trident.enabled=true \
@@ -1158,11 +1159,21 @@ Create them in the order below.
    oc rollout status ds/trident-node-linux \
      -n osac-csi-backends --timeout=180s
    fail=0
-   nodes=$(oc get nodes -l node-role.kubernetes.io/worker \
-     -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+   if ! nodes=$(oc get nodes -l node-role.kubernetes.io/worker \
+     -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); then
+     echo "Failed to list worker nodes" >&2
+     exit 1
+   fi
    if [ -z "$nodes" ]; then
-     nodes=$(oc get nodes \
-       -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+     if ! nodes=$(oc get nodes \
+       -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); then
+       echo "Failed to list nodes" >&2
+       exit 1
+     fi
+   fi
+   if [ -z "$nodes" ]; then
+     echo "No nodes found" >&2
+     exit 1
    fi
    for node in $nodes; do
      if ! oc get csinode "$node" \
@@ -1182,11 +1193,21 @@ Create them in the order below.
    the Trident backend until every node succeeds.
 
    ```bash
-   nodes=$(oc get nodes -l node-role.kubernetes.io/worker \
-     -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+   if ! nodes=$(oc get nodes -l node-role.kubernetes.io/worker \
+     -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); then
+     echo "Failed to list worker nodes" >&2
+     exit 1
+   fi
    if [ -z "$nodes" ]; then
-     nodes=$(oc get nodes \
-       -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+     if ! nodes=$(oc get nodes \
+       -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); then
+       echo "Failed to list nodes" >&2
+       exit 1
+     fi
+   fi
+   if [ -z "$nodes" ]; then
+     echo "No nodes found" >&2
+     exit 1
    fi
    for node in $nodes; do
      oc debug "node/${node}" -- chroot /host sh -c \
@@ -1400,51 +1421,79 @@ Create them in the order below.
     `osac get computeinstancecatalogitem`, and retry with that item's UUID
     on the tenant session.
 
+    The guest password is written to a file and passed with `osac create -f`.
+    It is not an argument of the `osac` process.
+
     ```bash
     SUBNET_ID=$(osac get subnet default-ipv4 -o json | jq -r '.id')
     SECURITY_GROUP_ID=$(osac get securitygroup default -o json | jq -r '.id')
-    osac create computeinstance \
-      --name local-vm \
-      --catalog-item "$CATALOG_ITEM" \
-      --instance-type "$INSTANCE_TYPE" \
-      --boot-disk-size 10 \
-      --boot-disk-storage-tier local \
-      --run-strategy Always \
-      --user-data "$(cat <<EOF
-    #cloud-config
-    user: osac-admin
-    password: ${GUEST_PASSWORD}
-    chpasswd:
-      expire: false
-    ssh_pwauth: true
+    umask 077
+    LOCAL_VM_FILE=$(mktemp)
+    cat > "$LOCAL_VM_FILE" <<EOF
+    "@type": type.googleapis.com/osac.public.v1.ComputeInstance
+    metadata:
+      name: local-vm
+    spec:
+      catalog_item: ${CATALOG_ITEM}
+      instance_type: ${INSTANCE_TYPE}
+      boot_disk:
+        size_gib: 10
+        storage_tier:
+          name: local
+      network_attachments:
+        - subnet: ${SUBNET_ID}
+          security_groups:
+            - ${SECURITY_GROUP_ID}
+      run_strategy: Always
+      user_data: |
+        #cloud-config
+        user: osac-admin
+        password: ${GUEST_PASSWORD}
+        chpasswd:
+          expire: false
+        ssh_pwauth: true
     EOF
-    )" \
-      --network-attachment "subnet=${SUBNET_ID},security-groups=${SECURITY_GROUP_ID}"
+    osac create -f "$LOCAL_VM_FILE"
+    rm -f "$LOCAL_VM_FILE"
     osac get computeinstance
     ```
 
     ```bash
-    osac create computeinstance \
-      --name netapp-vm \
-      --catalog-item "$CATALOG_ITEM" \
-      --instance-type "$INSTANCE_TYPE" \
-      --boot-disk-size 10 \
-      --boot-disk-storage-tier ontap-nas \
-      --additional-disk size=20,storage-tier=ontap-nas \
-      --run-strategy Always \
-      --user-data "$(cat <<EOF
-    #cloud-config
-    user: osac-admin
-    password: ${GUEST_PASSWORD}
-    chpasswd:
-      expire: false
-    ssh_pwauth: true
+    umask 077
+    NETAPP_VM_FILE=$(mktemp)
+    cat > "$NETAPP_VM_FILE" <<EOF
+    "@type": type.googleapis.com/osac.public.v1.ComputeInstance
+    metadata:
+      name: netapp-vm
+    spec:
+      catalog_item: ${CATALOG_ITEM}
+      instance_type: ${INSTANCE_TYPE}
+      boot_disk:
+        size_gib: 10
+        storage_tier:
+          name: ontap-nas
+      additional_disks:
+        - size_gib: 20
+          storage_tier:
+            name: ontap-nas
+      network_attachments:
+        - subnet: ${SUBNET_ID}
+          security_groups:
+            - ${SECURITY_GROUP_ID}
+      run_strategy: Always
+      user_data: |
+        #cloud-config
+        user: osac-admin
+        password: ${GUEST_PASSWORD}
+        chpasswd:
+          expire: false
+        ssh_pwauth: true
     EOF
-    )" \
-      --network-attachment "subnet=${SUBNET_ID},security-groups=${SECURITY_GROUP_ID}"
+    osac create -f "$NETAPP_VM_FILE"
+    rm -f "$NETAPP_VM_FILE"
     ```
 
-    Omit `--additional-disk` for a root-only VM. The VM order must use the
+    Omit `additional_disks` for a root-only VM. The VM order must use the
     tenant's `ontap-nas` tier. The generated PVC must use the tenant-specific
     class `ontap-nas-${TENANT}`. The local VM does not need the AAP workaround
     below. The NetApp VM does. When that job fails, leave the
@@ -1504,6 +1553,9 @@ def request(path, payload=None):
 
 failed_job = request(f"/api/v2/jobs/{job_id}/")
 template_id = failed_job["summary_fields"]["job_template"]["id"]
+print(f"Job {job_id} status {failed_job.get('status')}, template {template_id}")
+if input("Launch this template? Type yes: ") != "yes":
+    raise SystemExit("not launched")
 extra_vars = failed_job["extra_vars"]
 if isinstance(extra_vars, str):
     extra_vars = json.loads(extra_vars)
