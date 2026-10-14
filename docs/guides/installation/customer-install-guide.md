@@ -1422,11 +1422,13 @@ Create them in the order below.
     on the tenant session.
 
     The guest password is written to a file and passed with `osac create -f`.
-    It is not an argument of the `osac` process.
+    It is not an argument of the `osac` process. It is inserted as a quoted
+    YAML scalar, so characters such as `:` and `#` stay inside the value.
 
     ```bash
     SUBNET_ID=$(osac get subnet default-ipv4 -o json | jq -r '.id')
     SECURITY_GROUP_ID=$(osac get securitygroup default -o json | jq -r '.id')
+    GUEST_PASSWORD_YAML=$(printf '%s' "$GUEST_PASSWORD" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()), end="")')
     umask 077
     LOCAL_VM_FILE=$(mktemp)
     cat > "$LOCAL_VM_FILE" <<EOF
@@ -1448,7 +1450,7 @@ Create them in the order below.
       user_data: |
         #cloud-config
         user: osac-admin
-        password: ${GUEST_PASSWORD}
+        password: ${GUEST_PASSWORD_YAML}
         chpasswd:
           expire: false
         ssh_pwauth: true
@@ -1459,6 +1461,7 @@ Create them in the order below.
     ```
 
     ```bash
+    GUEST_PASSWORD_YAML=$(printf '%s' "$GUEST_PASSWORD" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()), end="")')
     umask 077
     NETAPP_VM_FILE=$(mktemp)
     cat > "$NETAPP_VM_FILE" <<EOF
@@ -1484,7 +1487,7 @@ Create them in the order below.
       user_data: |
         #cloud-config
         user: osac-admin
-        password: ${GUEST_PASSWORD}
+        password: ${GUEST_PASSWORD_YAML}
         chpasswd:
           expire: false
         ssh_pwauth: true
