@@ -836,10 +836,16 @@ backend. For the full variable reference, see
 
 ### 6.4 NetApp ONTAP storage
 
-NetApp integration with OSAC is under development. For now, add an ONTAP NFS
-tier to an existing VMaaS installation with the temporary manual procedure in
-the [NetApp ONTAP and Trident guide](netapp-osac-integration-vmaas.md).
-That procedure is not part of the standard install.
+NetApp integration with OSAC is under development. Storage installation guides
+should be grouped by vendor (NetApp, VAST, Pure, and others) and storage type
+(block, file, object), with separate transport-specific guides where needed.
+Block storage may use FC, FCoE, iSCSI, NVMe/FC, NVMe/TCP, or NVMe/RDMA; file
+and object storage use standard Ethernet/IP networks.
+
+The temporary [NetApp ONTAP and Trident guide](netapp-osac-integration-vmaas.md)
+covers ONTAP file storage over Ethernet/IP (NFS), not block storage over FC.
+Until OSAC Storage supports this combination, customers who need it can use
+this manual procedure. It is not part of the standard install.
 
 ---
 

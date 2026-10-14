@@ -6,6 +6,9 @@ installation and is not part of the standard OSAC install. Complete
 [Section 6.1](customer-install-guide.md#61-installing-osac-for-vmaas) of the
 [customer install guide](customer-install-guide.md) first.
 
+This guide covers one combination: NetApp ONTAP file storage over Ethernet/IP
+(NFS). It does not cover block storage over FC.
+
 > **Manual procedure.** The `osac` release does not enable this path.
 >
 > This procedure adds a NetApp ONTAP NFS tier to an existing VMaaS
