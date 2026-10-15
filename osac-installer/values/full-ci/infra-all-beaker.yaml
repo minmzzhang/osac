@@ -1,0 +1,69 @@
+# Combined Beaker lab infrastructure values for VMaaS, BMaaS, and CaaS.
+#
+# Use with values/full-ci/instance.yaml. That instance profile enables the
+# caas, vmaas, and bmaas services. BMaaS Metal3 settings remain in the
+# instance values because they configure the BMF operator, not OLM.
+
+# --- OLM subscriptions (osac-deps) ---
+certManager:
+  enabled: true
+trustManager:
+  enabled: true
+aapOperator:
+  enabled: true
+lvms:
+  enabled: true
+  channel: "stable-4.22"
+metallb:
+  enabled: true
+  channel: "stable"
+cnv:
+  enabled: true
+  channel: "stable"
+mce:
+  enabled: true
+  channel: "stable-2.17"
+  osImages:
+    - openshiftVersion: "4.22"
+      version: "9.8.20260428-0"
+      url: "https://mirror.openshift.com/pub/openshift-v4/x86_64/dependencies/rhcos/4.22/4.22.0/rhcos-4.22.0-x86_64-live-iso.x86_64.iso"
+      cpuArchitecture: "x86_64"
+
+# --- Infrastructure (osac-infra) ---
+caIssuer:
+  enabled: true
+keycloak:
+  enabled: true
+  # The Helm chart uses this external hostname for OIDC discovery and the
+  # route certificate. Replace osac.local.lab for another hub domain.
+  hostname: "https://keycloak-keycloak.apps.osac.local.lab"
+  route:
+    hostname: "keycloak-keycloak.apps.osac.local.lab"
+  # Keep credentials outside Git. Set adminUsername/adminPassword in a
+  # git-ignored local overlay only when password login is required.
+  # devFixtures seeds the test accounts used by the CI-style workflows.
+  devFixtures:
+    enabled: true
+kafka:
+  enabled: true
+  channel: "stable"
+
+# --- Bundled PostgreSQL ---
+# Ephemeral lab database; data is lost if the pod is removed.
+bundledPostgres:
+  enabled: true
+  database:
+    name: service
+    user: service
+
+# --- Bundled OpenBao ---
+# The podSecurityContext workaround is required by OpenShift restricted-v2.
+# The issuer must be the external Keycloak route used in the token `iss` claim.
+# Replace osac.local.lab if the hub uses a different cluster domain.
+bundledVault:
+  enabled: true
+  devRootToken: "dev-root-token"
+  keycloakIssuerUrl: "https://keycloak-keycloak.apps.osac.local.lab/realms/osac"
+  keycloakAudience: "osac-api"
+  podSecurityContext:
+    runAsNonRoot: true

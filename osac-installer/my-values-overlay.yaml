@@ -1,0 +1,57 @@
+global:
+  osacDeploymentId: full-ci/beaker
+
+service:
+  # Browser origin allowed to call the REST API. This must match the UI Route
+  # host exactly; do not use the internal service hostname here.
+  httpCorsAllowedOrigins:
+    - https://osac-ui-osac.apps.osac.local.lab
+
+aap:
+  instanceGroups:
+    publishTemplates:
+      enabled: true
+    clusterFulfillment:
+      enabled: true
+      config:
+        NETWORK_CLASS: agentless_net
+        NETWORK_STEPS_COLLECTION: agentless_net.steps
+        # DNS_CLASS is patched after Helm installation; this chart schema does
+        # not accept dns.noop.dns during installation.
+        AGENTLESS_NET_TRUNK_INTERFACE: eth1
+        AGENTLESS_NET_EXTERNAL_INTERFACE: eth2
+        AGENTLESS_NET_DATA_INTERFACE: ens3
+        AGENTLESS_NET_MGMT_INTERFACE: ens4
+        AGENTLESS_NET_VLAN_POOL_START: "100"
+        AGENTLESS_NET_VLAN_POOL_END: "199"
+        AGENTLESS_NET_EXTERNAL_GATEWAY: "172.20.20.1"
+        AGENTLESS_NET_SUBNET_CIDR: "10.100.0.0/24"
+        AGENTLESS_NET_PUBLIC_IP_POOL_START: "192.168.100.10"
+        AGENTLESS_NET_PUBLIC_IP_POOL_END: "192.168.100.50"
+        EXTERNAL_ACCESS_BASE_DOMAIN: osac.minzhang.edge-sro.rhecoeng.com
+        # Keep the supported domain on the management hub during Helm install.
+        # The post-install ConfigMap patch switches DNS_CLASS to dns.noop.dns.
+        EXTERNAL_ACCESS_SUPPORTED_BASE_DOMAINS: apps.osac.local.lab
+        HOSTED_CLUSTER_BASE_DOMAIN: osac.minzhang.edge-sro.rhecoeng.com
+        HOSTED_CLUSTER_CONTROLLER_AVAILABILITY_POLICY: SingleReplica
+        HOSTED_CLUSTER_INFRASTRUCTURE_AVAILABILITY_POLICY: SingleReplica
+    networkFulfillment:
+      enabled: true
+
+bmf:
+  env:
+    enableNetworkingProvisioning: "false"
+  metal3:
+    enabled: true
+    namespace: host-inventory
+    hostClass: metal3
+
+networkManagers:
+  - name: agentless-net
+    role: fabric
+    description: "Agentless network backend: VLAN, L3, IPAM, and NAT"
+    capabilities: "ipv4"
+
+networkClass:
+  fabricManager: agentless-net
+  k8sManager: ""
