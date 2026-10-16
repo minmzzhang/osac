@@ -17,7 +17,7 @@ permissions, before installing the platform chart.
 |-------------|---------|
 | OpenShift | 4.17+ with cluster-admin access |
 | CLI tools | `oc`, Helm 3.17.0+ minimum for `--take-ownership`; select a minor compatible with Kubernetes, `git` |
-| Network | Outbound access to github.com, ghcr.io, quay.io, registry.redhat.io, topolvm.github.io |
+| Network | Outbound access to github.com, ghcr.io, quay.io, and registry.redhat.io. Building the `osac-infra` dependency also requires Helm workstation access to topolvm.github.io. |
 | AAP license | Subscription manifest (`license.zip`) from [Red Hat Customer Portal](https://access.redhat.com/) |
 
 ## How It Works
@@ -157,6 +157,25 @@ The customer install guide also explains how to configure `my-values.yaml` for
 the services you plan to deploy. Check the LVMS device configuration and
 MetalLB address range against your cluster, and set `cnv.enabled: true` if
 your deployment uses VMaaS.
+
+### Storage class
+
+OSAC PVCs use the cluster's default `StorageClass`. If the cluster already has
+a storage provisioner, make the intended `StorageClass` the default before
+installing; the charts do not configure a class per PVC. Check the available
+classes and which one is default with:
+
+```bash
+oc get storageclass
+```
+
+The default class is marked `(default)` in the output.
+
+When using an existing `StorageClass`, leave `lvms.enabled: false` and
+`topolvm.enabled: false` in `my-infra-values.yaml`. Both are disabled by
+default, so OSAC will not install LVMS or the TopoLVM CSI driver. The Phase 2
+validation hook warns when no default class exists, and stateful components
+may fail to provision PVCs.
 
 ### Phase 1a: install prerequisite Operators
 
@@ -374,7 +393,7 @@ Disable these for any real deployment.
 |-------|---------|-------------|
 | `bundledPostgres.enabled` | `false` | Deploys bundled PostgreSQL for development and evaluation. It is not intended for production. |
 | `bundledVault.enabled` | `true` | Deploys an in-cluster OpenBao secret store for development and evaluation. Set to `false` for production and follow the [secrets management configuration guide](secrets-management-configuration.md). |
-| `topolvm.enabled` | `false` | Installs the pinned TopoLVM CSI chart for Kind `dev-full`. It uses an external `lvmd` service and disposable `vg1`; the profile exposes the non-default `topolvm-provisioner` StorageClass. |
+| `topolvm.enabled` | `false` | Installs the pinned TopoLVM CSI chart for Kind `dev-full`. Keep it disabled when using an existing cluster `StorageClass`. It uses an external `lvmd` service and disposable `vg1`; the profile exposes the non-default `topolvm-provisioner` StorageClass. |
 
 The upgrade does not migrate data from the previous bundled PostgreSQL instance.
 Back up any data you need before upgrading.
@@ -583,8 +602,11 @@ manual install plan; approve its `InstallPlan` in the `osac-kafka` namespace.
 
 Run dependency commands from `osac-installer/` and pass the chart directory.
 For the Phase 1b TopoLVM dependency, use
-`helm dependency build ./charts/osac-infra`; this requires outbound access to
-`topolvm.github.io`. The Phase 2 `osac` chart uses `file://` subcharts and
+`helm dependency build ./charts/osac-infra`. Helm downloads the declared
+dependency from `topolvm.github.io` during this step, even when
+`topolvm.enabled: false`; the disabled dependency is not installed. This
+repository access is needed from the machine running Helm, not from the
+cluster at runtime. The Phase 2 `osac` chart uses `file://` subcharts and
 requires a full monorepo checkout; the install procedure updates those with
 `helm dependency update ./charts/osac`. OCI chart pulls require outbound
 access to `ghcr.io`. A `not found` error on
