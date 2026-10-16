@@ -16,8 +16,8 @@ permissions, before installing the platform chart.
 | Requirement | Details |
 |-------------|---------|
 | OpenShift | 4.17+ with cluster-admin access |
-| CLI tools | `oc`, `helm`, `git` |
-| Network | Outbound access to github.com, ghcr.io, quay.io, registry.redhat.io |
+| CLI tools | `oc`, Helm 3.17.0+ or 4.x (required for `--take-ownership`), `git` |
+| Network | Outbound access to github.com, ghcr.io, quay.io, registry.redhat.io, topolvm.github.io |
 | AAP license | Subscription manifest (`license.zip`) from [Red Hat Customer Portal](https://access.redhat.com/) |
 
 ## How It Works
@@ -195,9 +195,12 @@ repository.
 helm dependency build ./charts/osac-infra
 ```
 
-The chart renders the `osacNamespace` namespace as a prerequisite for its
-credentials. This guide creates that namespace earlier to store the AAP
-license secret, so pass `--take-ownership` to let `osac-infra` adopt it.
+When `keycloak.enabled: true` (the default), the chart renders the
+`osacNamespace` namespace and Keycloak credential resources. This guide creates
+that namespace earlier to store the AAP license secret, so pass
+`--take-ownership` to let `osac-infra` adopt it. If Keycloak is disabled, the
+chart skips this namespace resource, so this particular ownership reason does
+not apply.
 
 ```bash
 helm upgrade --install osac-infra ./charts/osac-infra \
