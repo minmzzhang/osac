@@ -16,7 +16,7 @@ permissions, before installing the platform chart.
 | Requirement | Details |
 |-------------|---------|
 | OpenShift | 4.17+ with cluster-admin access |
-| CLI tools | `oc`, Helm 3.17.0+ or 4.x (required for `--take-ownership`), `git` |
+| CLI tools | `oc`, Helm 3.17.0+ minimum for `--take-ownership`; select a minor compatible with Kubernetes, `git` |
 | Network | Outbound access to github.com, ghcr.io, quay.io, registry.redhat.io, topolvm.github.io |
 | AAP license | Subscription manifest (`license.zip`) from [Red Hat Customer Portal](https://access.redhat.com/) |
 
@@ -216,9 +216,16 @@ helm upgrade --install osac-infra ./charts/osac-infra \
 
 ### Phase 2: install the OSAC platform
 
+Helm 3.17.0 is the minimum version required for `--take-ownership`. OpenShift
+4.17 uses Kubernetes 1.30 and is compatible with Helm 3.17.x or 3.18.x. For
+other cluster versions, choose a Helm 3 minor that supports the cluster's
+Kubernetes version; see the [Helm 3 version-skew documentation](https://helm.sh/docs/v3/topics/version_skew/).
+With Helm 4, first confirm that the release supports your cluster's Kubernetes
+version, then add `--force-conflicts` to the upgrade command to resolve the AAP
+field ownership conflict. Helm 4 is incompatible with OpenShift 4.17's
+Kubernetes 1.30.
+
 ```bash
-# Helm 4: --force-conflicts is required because the AAP operator takes
-# field ownership of app.kubernetes.io/managed-by on the osac-aap CR.
 helm dependency update ./charts/osac
 helm upgrade --install osac ./charts/osac \
     -n "$NS" --create-namespace \
@@ -227,7 +234,6 @@ helm upgrade --install osac ./charts/osac \
     --set service.externalHostname="fulfillment-api-$NS.$DOMAIN" \
     --set service.internalHostname="fulfillment-internal-api-$NS.$DOMAIN" \
     --set-string ui.auth.oidcIssuerURL="https://keycloak-keycloak.$DOMAIN/realms/osac" \
-    --force-conflicts \
     --wait --timeout 40m
 ```
 
@@ -466,9 +472,11 @@ their own Helm configuration.
 
 ## Uninstall
 
-The `osac-infra` release owns the `osacNamespace` after adopting it. Uninstall
-the `osac` release first, as shown below. Uninstalling `osac-infra` also
-deletes that namespace and any resources still inside it.
+When `keycloak.enabled: true` (the default), the `osac-infra` release owns the
+`osacNamespace` after adopting it. Uninstall the `osac` release first, as shown
+below. Uninstalling `osac-infra` then deletes that namespace and any resources
+still inside it. When Keycloak is disabled, `osac-infra` does not render or own
+that namespace, so uninstalling the release leaves it in place.
 
 ```bash
 helm uninstall osac -n "$NS"
