@@ -23,6 +23,7 @@ import (
 	grpccodes "google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/uuid"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
@@ -40,10 +41,11 @@ var _ = Describe("NATGateway lifecycle", func() {
 		virtualNetworksClient    privatev1.VirtualNetworksClient
 		networkClassesClient     privatev1.NetworkClassesClient
 
-		networkClassId   string
-		virtualNetworkId string
-		poolId           string
-		externalIPId     string
+		networkClassId    string
+		networkClassHubID string
+		virtualNetworkId  string
+		poolId            string
+		externalIPId      string
 	)
 
 	BeforeEach(func() {
@@ -68,6 +70,21 @@ var _ = Describe("NATGateway lifecycle", func() {
 		Expect(err).ToNot(HaveOccurred())
 		networkClassId = ncResp.GetObject().GetId()
 		waitForNetworkClassReady(ctx, networkClassesClient, networkClassId)
+		setNetworkClassCanonicalHub(ctx, networkClassesClient, networkClassId, hubId)
+		expectNetworkClassStatus(
+			ctx,
+			networkClassesClient,
+			networkClassId,
+			privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY,
+			hubId,
+			"",
+		)
+		networkClassResp, err := networkClassesClient.Get(ctx, privatev1.NetworkClassesGetRequest_builder{
+			Id: networkClassId,
+		}.Build())
+		Expect(err).ToNot(HaveOccurred())
+		networkClassHubID = networkClassResp.GetObject().GetStatus().GetHub()
+		Expect(networkClassHubID).ToNot(BeEmpty())
 
 		// Create VirtualNetwork
 		virtualNetworkId = fmt.Sprintf("test-vnet-%s", uuid.New())
@@ -94,6 +111,7 @@ var _ = Describe("NATGateway lifecycle", func() {
 			g.Expect(err).ToNot(HaveOccurred())
 			g.Expect(resp.GetObject().GetStatus().GetState()).To(
 				Equal(privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_PENDING))
+			g.Expect(resp.GetObject().GetStatus().GetHub()).To(Equal(networkClassHubID))
 		}, time.Minute, time.Second).Should(Succeed())
 
 		vnGetResp, err := virtualNetworksClient.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{
@@ -166,6 +184,13 @@ var _ = Describe("NATGateway lifecycle", func() {
 			}.Build(),
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
+		Eventually(func(g Gomega) {
+			resp, err := privateExternalIPsClient.Get(ctx, privatev1.ExternalIPsGetRequest_builder{
+				Id: externalIPId,
+			}.Build())
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(resp.GetObject().GetStatus().GetHub()).To(Equal(networkClassHubID))
+		}, time.Minute, time.Second).Should(Succeed())
 
 		// Promote ExternalIP to ALLOCATED
 		ipGetResp, err := privateExternalIPsClient.Get(ctx, privatev1.ExternalIPsGetRequest_builder{
@@ -174,11 +199,14 @@ var _ = Describe("NATGateway lifecycle", func() {
 		Expect(err).ToNot(HaveOccurred())
 		ip := ipGetResp.GetObject()
 		ip.SetStatus(privatev1.ExternalIPStatus_builder{
-			State: privatev1.ExternalIPState_EXTERNAL_IP_STATE_ALLOCATED,
+			State:               privatev1.ExternalIPState_EXTERNAL_IP_STATE_ALLOCATED,
+			StateTransitionTime: timestamppb.New(time.Now()),
 		}.Build())
 		_, err = privateExternalIPsClient.Update(ctx, privatev1.ExternalIPsUpdateRequest_builder{
-			Object:     ip,
-			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"status.state"}},
+			Object: ip,
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{
+				"status.state", "status.state_transition_time",
+			}},
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
 	})
@@ -288,6 +316,15 @@ var _ = Describe("NATGateway lifecycle", func() {
 			}.Build(),
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
+		expectNetworkingResourceHub(ctx, networkClassHubID, func(getCtx context.Context) (string, error) {
+			resp, getErr := privateExternalIPsClient.Get(getCtx, privatev1.ExternalIPsGetRequest_builder{
+				Id: pendingIPId,
+			}.Build())
+			if getErr != nil {
+				return "", getErr
+			}
+			return resp.GetObject().GetStatus().GetHub(), nil
+		})
 		DeferCleanup(func() {
 			// Promote to ALLOCATED so delete succeeds
 			ipGetResp, err := privateExternalIPsClient.Get(ctx, privatev1.ExternalIPsGetRequest_builder{
@@ -296,11 +333,14 @@ var _ = Describe("NATGateway lifecycle", func() {
 			if err == nil {
 				ip := ipGetResp.GetObject()
 				ip.SetStatus(privatev1.ExternalIPStatus_builder{
-					State: privatev1.ExternalIPState_EXTERNAL_IP_STATE_ALLOCATED,
+					State:               privatev1.ExternalIPState_EXTERNAL_IP_STATE_ALLOCATED,
+					StateTransitionTime: timestamppb.New(time.Now()),
 				}.Build())
 				_, _ = privateExternalIPsClient.Update(ctx, privatev1.ExternalIPsUpdateRequest_builder{
-					Object:     ip,
-					UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"status.state"}},
+					Object: ip,
+					UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{
+						"status.state", "status.state_transition_time",
+					}},
 				}.Build())
 			}
 			_, _ = externalIPsClient.Delete(ctx, publicv1.ExternalIPsDeleteRequest_builder{

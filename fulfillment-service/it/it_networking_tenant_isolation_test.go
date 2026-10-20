@@ -23,6 +23,7 @@ import (
 	grpccodes "google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
 	"github.com/osac-project/osac/fulfillment-service/internal/uuid"
@@ -84,6 +85,16 @@ var _ = Describe("Networking tenant isolation", func() {
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
 		networkClassId = ncResp.GetObject().GetId()
+		waitForNetworkClassReady(ctx, networkClassesClient, networkClassId)
+		setNetworkClassCanonicalHub(ctx, networkClassesClient, networkClassId, hubId)
+		expectNetworkClassStatus(
+			ctx,
+			networkClassesClient,
+			networkClassId,
+			privatev1.NetworkClassState_NETWORK_CLASS_STATE_READY,
+			hubId,
+			"",
+		)
 		DeferCleanup(func() {
 			_, _ = networkClassesClient.Delete(ctx, privatev1.NetworkClassesDeleteRequest_builder{
 				Id: networkClassId,
@@ -114,28 +125,18 @@ var _ = Describe("Networking tenant isolation", func() {
 			}.Build())
 		})
 
-		Eventually(func(g Gomega) {
-			resp, err := virtualNetworksClient.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{
-				Id: vnID,
-			}.Build())
-			g.Expect(err).ToNot(HaveOccurred())
-			g.Expect(resp.GetObject().GetStatus().GetState()).To(
-				Equal(privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_PENDING))
-		}, time.Minute, time.Second).Should(Succeed())
-
-		vnGetResp, err := virtualNetworksClient.Get(ctx, privatev1.VirtualNetworksGetRequest_builder{
-			Id: vnID,
-		}.Build())
-		Expect(err).ToNot(HaveOccurred())
-		vn := vnGetResp.GetObject()
-		vn.SetStatus(privatev1.VirtualNetworkStatus_builder{
-			State: privatev1.VirtualNetworkState_VIRTUAL_NETWORK_STATE_READY,
-		}.Build())
-		_, err = virtualNetworksClient.Update(ctx, privatev1.VirtualNetworksUpdateRequest_builder{
-			Object:     vn,
-			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"status.state"}},
-		}.Build())
-		Expect(err).ToNot(HaveOccurred())
+		waitForNetworkingFixtureResource(ctx, func(probeCtx context.Context) error {
+			_, err := virtualNetworksClient.Get(probeCtx, privatev1.VirtualNetworksGetRequest_builder{Id: vnID}.Build())
+			return err
+		})
+		expectNetworkingResourceHub(ctx, hubId, func(getCtx context.Context) (string, error) {
+			response, getErr := virtualNetworksClient.Get(getCtx, privatev1.VirtualNetworksGetRequest_builder{Id: vnID}.Build())
+			if getErr != nil {
+				return "", getErr
+			}
+			return response.GetObject().GetStatus().GetHub(), nil
+		})
+		setRoutingVirtualNetworkReady(ctx, virtualNetworksClient, vnID)
 		return vnID
 	}
 
@@ -181,17 +182,18 @@ var _ = Describe("Networking tenant isolation", func() {
 		if tenant == "" {
 			Expect(pool.GetMetadata().GetTenant()).To(Equal(auth.SharedTenant))
 		}
-		pool.SetStatus(privatev1.ExternalIPPoolStatus_builder{
-			State:     privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_READY,
-			Total:     pool.GetStatus().GetTotal(),
-			Available: pool.GetStatus().GetAvailable(),
-			Allocated: pool.GetStatus().GetAllocated(),
-		}.Build())
+		pool.GetStatus().SetState(privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_READY)
 		_, err = poolsClient.Update(ctx, privatev1.ExternalIPPoolsUpdateRequest_builder{
 			Object:     pool,
 			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"status.state"}},
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
+		Eventually(func(g Gomega) {
+			resp, err := poolsClient.Get(ctx, privatev1.ExternalIPPoolsGetRequest_builder{Id: poolID}.Build())
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(resp.GetObject().GetStatus().GetState()).To(
+				Equal(privatev1.ExternalIPPoolState_EXTERNAL_IP_POOL_STATE_READY))
+		}, time.Minute, time.Second).Should(Succeed())
 		return poolID
 	}
 
@@ -225,11 +227,14 @@ var _ = Describe("Networking tenant isolation", func() {
 		Expect(err).ToNot(HaveOccurred())
 		ip := ipGetResp.GetObject()
 		ip.SetStatus(privatev1.ExternalIPStatus_builder{
-			State: privatev1.ExternalIPState_EXTERNAL_IP_STATE_ALLOCATED,
+			State:               privatev1.ExternalIPState_EXTERNAL_IP_STATE_ALLOCATED,
+			StateTransitionTime: timestamppb.New(time.Now()),
 		}.Build())
 		_, err = externalIPsClient.Update(ctx, privatev1.ExternalIPsUpdateRequest_builder{
-			Object:     ip,
-			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"status.state"}},
+			Object: ip,
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{
+				"status.state", "status.state_transition_time",
+			}},
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
 	}
@@ -291,7 +296,7 @@ var _ = Describe("Networking tenant isolation", func() {
 					Template: privatev1.ClusterTemplateReference_builder{Id: templateID}.Build(),
 					NodeSets: map[string]*privatev1.ClusterNodeSet{
 						"workers": privatev1.ClusterNodeSet_builder{
-							BaremetalInstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: instanceTypeName}.Build(),
+							BaremetalInstanceType: privatev1.BareMetalInstanceTypeReference_builder{Id: instanceTypeName, Shared: true}.Build(),
 							Size:                  new(int32(1)),
 						}.Build(),
 					},

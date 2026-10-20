@@ -24,6 +24,8 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 	corev1 "k8s.io/api/core/v1"
 	kubeerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -65,6 +67,7 @@ var _ = Describe("Cluster reconciler", func() {
 	BeforeEach(func() {
 		// Create a context:
 		ctx = context.Background()
+		getOrCreateTenantDefaultNetworkClassFixture(ctx)
 
 		// Create the clients:
 		clustersClient = publicv1.NewClustersClient(tool.ExternalView().UserConn())
@@ -340,7 +343,7 @@ var _ = Describe("Cluster reconciler", func() {
 					},
 					NodeSets: map[string]*publicv1.ClusterNodeSet{
 						"my-node-set": publicv1.ClusterNodeSet_builder{
-							BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: bmitName}.Build(),
+							BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: bmitName, Shared: true}.Build(),
 							Size:                  proto.Int32(3),
 						}.Build(),
 					},
@@ -392,12 +395,15 @@ var _ = Describe("Cluster reconciler", func() {
 					},
 					NodeSets: map[string]*publicv1.ClusterNodeSet{
 						"my-node-set": publicv1.ClusterNodeSet_builder{
-							BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: bmitName}.Build(),
+							BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Id: bmitName, Shared: true}.Build(),
 							Size:                  proto.Int32(5),
 						}.Build(),
 					},
 				}.Build(),
 			}.Build(),
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{
+				"spec.node_sets",
+			}},
 		}.Build())
 		Expect(err).ToNot(HaveOccurred())
 
@@ -522,6 +528,7 @@ var _ = Describe("Cluster reconciler", func() {
 			Expect(err).ToNot(HaveOccurred())
 			privateCluster := privateClusterResponse.GetObject()
 			privateCluster.GetStatus().SetState(privatev1.ClusterState_CLUSTER_STATE_READY)
+			privateCluster.GetStatus().SetStateTransitionTime(timestamppb.New(time.Now()))
 			_, err = privateClustersClient.Update(ctx, privatev1.ClustersUpdateRequest_builder{
 				Object: privateCluster,
 			}.Build())

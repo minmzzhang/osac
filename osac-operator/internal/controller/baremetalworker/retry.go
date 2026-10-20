@@ -119,6 +119,9 @@ func (r *Reconciler) handleFailedWorkers(
 		retryTime := metav1.NewTime(now.Add(backoff))
 		w.NextRetryTime = &retryTime
 		w.BareMetalInstance.ID = ""
+		// Only confirmed old-incarnation absence makes a new reservation safe to
+		// cancel. Unknown Create outcomes never pass this cleanup checkpoint.
+		w.BMICreateState = v1alpha1.WorkerBMICreateStateReserved
 		w.ReadySince = nil
 		// The attempt origin belongs to the attempt that just ended. A fresh one
 		// is persisted before the replacement Create, so retry backoff is never
@@ -145,7 +148,7 @@ func hasFailedIncarnations(workers []v1alpha1.WorkerStatus) bool {
 // Returns a non-zero result if the fulfillment service is unavailable. If the worker is not
 // eligible for retry, this is a no-op.
 func (r *Reconciler) retryFailedWorker(
-	ctx context.Context, co *v1alpha1.ClusterOrder, tenant string,
+	ctx context.Context, co *v1alpha1.ClusterOrder, cluster *privatev1.Cluster,
 	nr *v1alpha1.NodeRequest, prev *v1alpha1.WorkerStatus,
 	image *privatev1.DiskImageReference, ignitionRaw, filter, fabricInterface string,
 ) (ctrl.Result, error) {
@@ -153,7 +156,7 @@ func (r *Reconciler) retryFailedWorker(
 		return ctrl.Result{}, nil
 	}
 	log := ctrllog.FromContext(ctx)
-	bmi, res, err := r.ensureBMI(ctx, co, tenant, *nr, prev.BareMetalInstance.Name, image, ignitionRaw, filter, fabricInterface)
+	bmi, res, err := r.ensureBMI(ctx, co, cluster, *nr, prev.BareMetalInstance.Name, image, ignitionRaw, filter, fabricInterface)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

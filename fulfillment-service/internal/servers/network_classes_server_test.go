@@ -14,6 +14,7 @@ language governing permissions and limitations under the License.
 package servers
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -178,6 +179,36 @@ var _ = Describe("Network classes server", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
+		It("rejects changing the singleton's tenant and preserves the stored object", func() {
+			created := create()
+
+			// Tenant immutability is enforced by the database trigger, which aborts the
+			// current transaction, so the rejected update runs inside a savepoint.
+			tx, txErr := database.TxFromContext(ctx)
+			Expect(txErr).ToNot(HaveOccurred())
+			txErr = tx.Savepoint(ctx, func(savepointCtx context.Context) error {
+				_, updateErr := server.Update(savepointCtx, privatev1.NetworkClassesUpdateRequest_builder{
+					Object: privatev1.NetworkClass_builder{
+						Id:       created.GetId(),
+						Metadata: privatev1.Metadata_builder{Tenant: auth.SharedTenant}.Build(),
+					}.Build(),
+					UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"metadata.tenant"}},
+				}.Build())
+				return updateErr
+			})
+			Expect(txErr).To(HaveOccurred())
+			Expect(grpcstatus.Code(txErr)).To(Equal(grpccodes.InvalidArgument))
+			Expect(txErr.Error()).To(ContainSubstring("metadata.tenant"))
+			Expect(txErr.Error()).To(ContainSubstring("immutable"))
+
+			stored, getErr := server.Get(ctx, privatev1.NetworkClassesGetRequest_builder{Id: created.GetId()}.Build())
+			Expect(getErr).ToNot(HaveOccurred())
+			Expect(stored.GetObject().GetMetadata().GetTenant()).To(Equal(testTenant))
+
+			_, err := server.Delete(ctx, privatev1.NetworkClassesDeleteRequest_builder{Id: created.GetId()}.Build())
+			Expect(err).ToNot(HaveOccurred())
+		})
+
 		It("derives a DNS name from the configured manager", func() {
 			response, err := server.Create(ctx, privatev1.NetworkClassesCreateRequest_builder{
 				Object: privatev1.NetworkClass_builder{
@@ -238,6 +269,41 @@ var _ = Describe("Network classes server", func() {
 		It("validates and persists defaults without making them a second selection mechanism", func() {
 			created := createWithDefaults(validDefaults())
 			Expect(created.GetSpec().GetDefaults().GetVirtualNetworkIpv4Cidr()).To(Equal("10.0.0.0/16"))
+		})
+
+		DescribeTable("rejects IPv6 default CIDR configuration",
+			func(defaults *privatev1.NetworkDefaults) {
+				_, err := server.Create(ctx, privatev1.NetworkClassesCreateRequest_builder{
+					Object: privatev1.NetworkClass_builder{
+						Title:         "IPv6 defaults",
+						FabricManager: new("netris"),
+						Spec:          privatev1.NetworkClassSpec_builder{Defaults: defaults}.Build(),
+					}.Build(),
+				}.Build())
+				Expect(grpcstatus.Code(err)).To(Equal(grpccodes.InvalidArgument))
+			},
+			Entry("virtual network CIDR", privatev1.NetworkDefaults_builder{
+				VirtualNetworkIpv6Cidr: "2001:db8::/32",
+			}.Build()),
+			Entry("subnet CIDR", privatev1.NetworkDefaults_builder{
+				SubnetIpv6Cidr: "2001:db8:1::/64",
+			}.Build()),
+		)
+
+		It("rejects IPv6 default CIDR configuration on update", func() {
+			created := createWithDefaults(validDefaults())
+			_, err := server.Update(ctx, privatev1.NetworkClassesUpdateRequest_builder{
+				Object: privatev1.NetworkClass_builder{
+					Id: created.GetId(),
+					Spec: privatev1.NetworkClassSpec_builder{Defaults: privatev1.NetworkDefaults_builder{
+						VirtualNetworkIpv4Cidr: "10.0.0.0/16",
+						SubnetIpv4Cidr:         "10.0.1.0/24",
+						SubnetIpv6Cidr:         "2001:db8:1::/64",
+					}.Build()}.Build(),
+				}.Build(),
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec.defaults"}},
+			}.Build())
+			Expect(grpcstatus.Code(err)).To(Equal(grpccodes.InvalidArgument))
 		})
 
 		It("rejects a subnet CIDR without its parent virtual-network CIDR", func() {

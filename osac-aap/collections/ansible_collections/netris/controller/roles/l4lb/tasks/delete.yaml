@@ -13,12 +13,13 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ netris_validate_certs | default(true) }}"
+    ca_path: "{{ netris_ca_path | default(omit, true) }}"
   register: _l4lb_list_resp
   no_log: true
 
 - name: Clear previous L4LB lookup result
   ansible.builtin.set_fact:
-    _existing_l4lb: null
+    _existing_l4lb:
 
 - name: Find L4LB by name
   ansible.builtin.set_fact:
@@ -34,4 +35,5 @@
       Cookie: "connect.sid={{ netris_session_cookie }}"
     status_code: [200, 204]
     validate_certs: "{{ netris_validate_certs | default(true) }}"
+    ca_path: "{{ netris_ca_path | default(omit, true) }}"
   no_log: true

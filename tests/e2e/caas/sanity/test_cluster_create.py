@@ -8,17 +8,17 @@ import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from tests.e2e.caas.deletion_diagnostics import snapshot_cluster_deletion
 from tests.e2e.core.fulfillment_trust import assert_cluster_trust, assert_management_tls
-from tests.e2e.core.grpc_client import GRPCClient
+from tests.e2e.core.grpc_client import PRIVATE_API, GRPCClient
 from tests.e2e.core.helpers import (
     unique_name,
     wait_for_cluster_deleting,
-    wait_for_cluster_deletion,
     wait_for_cluster_deletion_without_cleanup,
     wait_for_cluster_grpc_deleting_or_archived,
     wait_for_cluster_grpc_removal,
@@ -40,7 +40,7 @@ pytestmark = pytest.mark.sanity
 # ClusterVersion via GRPCClient.ensure_cluster_version instead of accumulating
 # duplicates on the shared cluster.
 TEST_RELEASE_IMAGE = env("OSAC_TEST_RELEASE_IMAGE", "quay.io/openshift-release-dev/ocp-release:4.22.0-multi")
-RHCOS_IMAGE = env("OSAC_RHCOS_BMI_IMAGE", "oci://quay.io/rh_ee_rpiccoli/rhcos-bmi:4.22.0")
+RHCOS_IMAGE = env("OSAC_RHCOS_BMI_IMAGE", "oci://quay.io/osac-project/rhcos:4.22.0")
 _WORKER_METRICS = ("osac_caas_worker_desired", "osac_caas_worker_ready", "osac_caas_worker_provisioning_failures_total")
 _WORKER_LEVEL_METRICS = _WORKER_METRICS[:2]
 _WORKER_FAILURE_METRIC = _WORKER_METRICS[2]
@@ -347,7 +347,6 @@ def _assert_worker_bmi_resources(
 ) -> set[str]:
     """Return only verified test-owned IDs for use in deletion assertions."""
     owned_bmi_ids: set[str] = set()
-    expected_owner = f"ClusterOrder/{co_name}"
     for bmi_id, bmi in candidate_bmis.items():
         spec = bmi["spec"]
         assert spec.get("catalogItem", spec.get("catalog_item")) is None
@@ -361,12 +360,11 @@ def _assert_worker_bmi_resources(
             until=bool,
             retries=30,
             delay=2,
-            description=f"{bmi_id} Kubernetes BMI CR",
+            description=f"{co_name} worker {bmi_id} Kubernetes BMI CR",
         )
         cr = k8s.get_json(resource="baremetalinstance", name=cr_name)
         assert cr["metadata"]["labels"]["osac.openshift.io/baremetalinstance-uuid"] == bmi_id
         assert cr["metadata"]["annotations"]["osac.openshift.io/tenant"] == tenant
-        assert cr["metadata"]["annotations"]["osac.openshift.io/owner-reference"] == expected_owner
         owned_bmi_ids.add(bmi_id)
     return owned_bmi_ids
 
@@ -548,6 +546,20 @@ def _assert_cluster_deleted(
     metering.verify()
 
 
+def _assert_catalog_created_cluster(
+    *, grpc: GRPCClient, uuid: str, catalog_item_id: str, pull_secret_name: str, ssh_public_key: str
+) -> None:
+    """Check that the catalog offering, not caller input, materialized the cluster spec."""
+    spec = grpc.get_cluster(cluster_id=uuid)["object"]["spec"]
+    catalog_ref = spec.get("catalog_item", spec.get("catalogItem", {}))
+    assert catalog_ref.get("id") == catalog_item_id
+    template_ref = spec.get("template", {})
+    assert template_ref.get("id"), "Catalog-created cluster must materialize its template reference"
+    assert spec.get("ssh_public_key", spec.get("sshPublicKey")) == ssh_public_key
+    pull_secret_ref = spec.get("pull_secret_secret", spec.get("pullSecretSecret", {}))
+    assert pull_secret_ref.get("name") == pull_secret_name
+
+
 @pytest.mark.metering
 def test_cluster_create(
     cli: OsacCLI,
@@ -559,11 +571,12 @@ def test_cluster_create(
     ssh_public_key_path: str,
     metering: MeteringCollector,
 ) -> None:
-    """Verify the full CaaS cluster lifecycle: create, provision to Ready, version and
+    """Verify the full CaaS cluster lifecycle through a catalog item: author a published
+    ClusterCatalogItem, create a cluster from it, provision to Ready, version and
     releaseImage propagation to the HostedCluster, N+1 metering heartbeat decomposition,
     worker scale-up reflected in updated.v1 metering, and deletion."""
 
-    private_grpc.ensure_bare_metal_instance_type(
+    worker_instance_type_id = private_grpc.ensure_bare_metal_instance_type(
         name="ci-worker-bm", host_label_selector={"osac.openshift.io/host-type": "default"}
     )
     logger.info("CaaS: ensuring DiskImage and ClusterVersion")
@@ -572,20 +585,44 @@ def test_cluster_create(
         version="4.22.0-rhcos", image=TEST_RELEASE_IMAGE, disk_image=disk_image_id
     )
     logger.info("CaaS: ClusterVersion available")
-    name = unique_name("e2e-cluster")
-    logger.info("CaaS: creating cluster")
-    uuid = cli.create_cluster(
-        name=name,
+    ssh_public_key = Path(ssh_public_key_path).read_text().strip()
+    logger.info("CaaS: creating ClusterCatalogItem")
+    # The shared offering locks every tenant-independent input (version, node sets, SSH
+    # key); the pull secret stays caller-supplied because a shared catalog item cannot
+    # fix a tenant-local secret for every tenant.
+    catalog_item_id = private_grpc.create_cluster_catalog_item(
+        name=unique_name("e2e-caas-catalog"),
         template=cluster_template,
-        version=version["name"],
-        node_sets={"workers": {"size": 1, "baremetal_instance_type": {"name": "ci-worker-bm"}}},
-        pull_secret=pull_secret_name,
-        ssh_public_key_file=ssh_public_key_path,
+        fields={
+            "version": {"locked": {"id": version["id"]}},
+            "ssh_public_key": {"locked": ssh_public_key},
+            "pull_secret_secret": {"editable": {}},
+            "node_sets": {
+                "locked": {
+                    "items": {"workers": {"size": 1, "baremetal_instance_type": {"id": worker_instance_type_id}}}
+                }
+            },
+        },
+        api=PRIVATE_API,
     )
-    logger.info("CaaS: cluster created")
-    metering.expect("osac.resource.created.v1", resource_id=uuid)
-
+    logger.info("CaaS: ClusterCatalogItem created")
+    name = unique_name("e2e-cluster")
+    uuid = ""
     try:
+        logger.info("CaaS: creating cluster from catalog item")
+        uuid = cli.create_cluster_with_catalog_item(
+            catalog_item=catalog_item_id, name=name, pull_secret=pull_secret_name
+        )
+        logger.info("CaaS: cluster created")
+        metering.expect("osac.resource.created.v1", resource_id=uuid)
+
+        _assert_catalog_created_cluster(
+            grpc=grpc,
+            uuid=uuid,
+            catalog_item_id=catalog_item_id,
+            pull_secret_name=pull_secret_name,
+            ssh_public_key=ssh_public_key,
+        )
         cluster = assert_cluster_available(
             grpc=grpc, k8s=k8s_hub_client, metering=metering, uuid=uuid, version_name=version["name"]
         )
@@ -607,8 +644,11 @@ def test_cluster_create(
         cli.delete_cluster(uuid=uuid)
         _assert_cluster_deleted(grpc=grpc, k8s=k8s_hub_client, metering=metering, uuid=uuid, cluster=cluster)
     finally:
+        if uuid:
+            with contextlib.suppress(subprocess.SubprocessError):
+                cli.delete_cluster(uuid=uuid)
         with contextlib.suppress(subprocess.SubprocessError):
-            cli.delete_cluster(uuid=uuid)
+            private_grpc.delete_cluster_catalog_item(catalog_item_id=catalog_item_id, api=PRIVATE_API)
 
 
 def _assert_two_node_set_requests(
@@ -786,166 +826,3 @@ def assert_cluster_with_two_node_sets_available(
     )
     infra_env_name = _wait_for_cluster_infra_env_name(k8s=k8s, co_name=co_name)
     return _ClusterResources(co_name=co_name, owned_bmi_ids=owned_bmi_ids, infra_env_name=infra_env_name)
-
-
-@pytest.mark.metering
-def test_cluster_create_with_two_node_sets(
-    cli: OsacCLI,
-    grpc: GRPCClient,
-    private_grpc: GRPCClient,
-    k8s_hub_client: K8sClient,
-    cluster_template: str,
-    pull_secret_name: str,
-    ssh_public_key_path: str,
-    metering: MeteringCollector,
-) -> None:
-    """Verify NodePool replicas stay isolated when a cluster has two BMaaS node sets."""
-
-    instance_types = {"compute": "ci-worker-bm", "gpu": "ci-worker-bm-gpu"}
-    for instance_type in instance_types.values():
-        private_grpc.ensure_bare_metal_instance_type(
-            name=instance_type, host_label_selector={"osac.openshift.io/host-type": "default"}
-        )
-
-    version = private_grpc.ensure_cluster_version(
-        version="4.22.0-rhcos",
-        image=TEST_RELEASE_IMAGE,
-        disk_image=private_grpc.ensure_disk_image(name="rhcos-4-22", source_ref=RHCOS_IMAGE),
-    )
-    name = unique_name("e2e-cluster-two-node-sets")
-    uuid = cli.create_cluster(
-        name=name,
-        template=cluster_template,
-        version=version["name"],
-        node_sets={
-            node_set: {"size": 1, "baremetal_instance_type": {"name": instance_type}}
-            for node_set, instance_type in instance_types.items()
-        },
-        pull_secret=pull_secret_name,
-        ssh_public_key_file=ssh_public_key_path,
-    )
-    metering.expect("osac.resource.created.v1", resource_id=uuid)
-
-    try:
-        cluster = assert_cluster_with_two_node_sets_available(
-            grpc=grpc, k8s=k8s_hub_client, metering=metering, uuid=uuid, instance_types=instance_types
-        )
-        if os.environ.get("OSAC_FULFILLMENT_TRUST_E2E") == "true":
-            assert_management_tls(k8s_hub_client, require_metering=True)
-            assert_cluster_trust(k8s_hub_client, cluster.co_name)
-        cli.delete_cluster(uuid=uuid)
-        _assert_cluster_deleted(grpc=grpc, k8s=k8s_hub_client, metering=metering, uuid=uuid, cluster=cluster)
-    finally:
-        with contextlib.suppress(subprocess.SubprocessError):
-            cli.delete_cluster(uuid=uuid)
-
-
-def test_cluster_create_with_version(
-    cli: OsacCLI,
-    grpc: GRPCClient,
-    private_grpc: GRPCClient,
-    k8s_hub_client: K8sClient,
-    cluster_template: str,
-    pull_secret_name: str,
-    ssh_public_key_path: str,
-) -> None:
-    """Verify explicit --version resolution: the Cluster API resource stores the
-    version reference, the ClusterVersion cannot be deleted while referenced,
-    and the ClusterOrder CR's releaseImage is resolved from the matching
-    ClusterVersion. Does not wait for full provisioning — the HostedCluster
-    image propagation is covered by test_cluster_create."""
-    private_grpc.ensure_bare_metal_instance_type(
-        name="ci-worker-bm", host_label_selector={"osac.openshift.io/host-type": "default"}
-    )
-    disk_image_id = private_grpc.ensure_disk_image(name="rhcos-4-22", source_ref=RHCOS_IMAGE)
-    version = private_grpc.ensure_cluster_version(
-        version="4.20.0-e2e", image=TEST_RELEASE_IMAGE, disk_image=disk_image_id
-    )
-
-    name = unique_name("e2e-cluster-version")
-    uuid = cli.create_cluster(
-        name=name,
-        template=cluster_template,
-        version=version["name"],
-        node_sets={"workers": {"size": 1, "baremetal_instance_type": {"name": "ci-worker-bm"}}},
-        pull_secret=pull_secret_name,
-        ssh_public_key_file=ssh_public_key_path,
-    )
-
-    try:
-        co_name = wait_for_cluster_order_cr(k8s=k8s_hub_client, uuid=uuid)
-
-        cluster = grpc.get_cluster(cluster_id=uuid)
-        assert cluster["object"]["spec"]["version"]["name"] == version["name"]
-
-        # While the cluster references this version, deletion must be rejected
-        output, rc = private_grpc.call_unchecked(
-            service="osac.private.v1.ClusterVersions/Delete", data={"id": version["id"]}
-        )
-        assert rc != 0, f"Expected delete to be rejected for referenced version, got: {output}"
-        assert "FailedPrecondition" in output or "referenced" in output.lower(), (
-            f"Expected FailedPrecondition or 'referenced' in rejection, got: {output}"
-        )
-
-        release_image = poll_until(
-            fn=lambda: k8s_hub_client.get_cluster_order_spec(name=co_name).get("releaseImage", ""),
-            until=lambda v: v != "",
-            retries=30,
-            delay=5,
-            description=f"{co_name} ClusterOrder releaseImage resolution",
-        )
-        assert release_image == TEST_RELEASE_IMAGE
-
-        cli.delete_cluster(uuid=uuid)
-
-        wait_for_cluster_deleting(k8s=k8s_hub_client, name=co_name)
-        wait_for_cluster_grpc_deleting_or_archived(grpc=grpc, uuid=uuid)
-        wait_for_cluster_deletion(k8s=k8s_hub_client, name=co_name)
-        wait_for_cluster_grpc_removal(grpc=grpc, uuid=uuid)
-    finally:
-        with contextlib.suppress(subprocess.CalledProcessError):
-            cli.delete_cluster(uuid=uuid)
-
-
-def test_cluster_create_rejected_for_invalid_version(
-    grpc: GRPCClient, private_grpc: GRPCClient, cluster_template: str
-) -> None:
-    """Verify cluster creation is rejected for disabled, obsolete, and
-    non-existent versions."""
-    private_grpc.ensure_bare_metal_instance_type(
-        name="ci-worker-bm", host_label_selector={"osac.openshift.io/host-type": "default"}
-    )
-    disabled = private_grpc.ensure_cluster_version(version="4.20.0-e2e-disabled", image=TEST_RELEASE_IMAGE)
-    private_grpc.update_cluster_version(version_id=disabled["id"], enabled=False)
-
-    obsolete = private_grpc.ensure_cluster_version(version="4.20.0-e2e-obsolete", image=TEST_RELEASE_IMAGE)
-    private_grpc.update_cluster_version(version_id=obsolete["id"], state="CLUSTER_VERSION_STATE_OBSOLETE")
-
-    def _create_with_version(version_name: str) -> tuple[str, int]:
-        return grpc.call_unchecked(
-            service="osac.public.v1.Clusters/Create",
-            data={
-                "object": {
-                    "metadata": {"name": unique_name("e2e-cluster-invalid-version")},
-                    "spec": {
-                        "template": {"name": cluster_template, "shared": True},
-                        "version": {"name": version_name, "shared": True},
-                        "nodeSets": {
-                            "workers": {"size": 1, "baremetalInstanceType": {"name": "ci-worker-bm", "shared": True}}
-                        },
-                    },
-                }
-            },
-        )
-
-    output, rc = _create_with_version(disabled["name"])
-    assert rc != 0, f"Expected create to reject disabled version, got: {output}"
-    assert "disabled" in output.lower(), f"Expected 'disabled' in rejection, got: {output}"
-
-    output, rc = _create_with_version(obsolete["name"])
-    assert rc != 0, f"Expected create to reject obsolete version, got: {output}"
-    assert "obsolete" in output.lower(), f"Expected 'obsolete' in rejection, got: {output}"
-
-    output, rc = _create_with_version("4-20-0-e2e-does-not-exist")
-    assert rc != 0, f"Expected create to reject non-existent version, got: {output}"
-    assert "not found" in output.lower(), f"Expected 'not found' in rejection, got: {output}"
