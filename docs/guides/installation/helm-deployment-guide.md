@@ -55,19 +55,36 @@ finalize the deployment:
 
 | Hook | Weight | What it does |
 |------|--------|-------------|
-| `osac-publish-templates` | 20 | Publishes cluster templates to the fulfillment service catalog |
+| `osac-publish-templates` | 20 | Publishes configured OSAC templates to the Fulfillment Service catalog |
 | `seed-cluster-versions` | 30 | Optionally seeds shared DiskImages and ClusterVersions |
 
-**Cluster template publishing** (`osac-publish-templates`): An init
-container waits for the fulfillment REST gateway to be healthy (up to
-600s), then launches the `osac-publish-templates` AAP job template and
-polls until it completes. Helm blocks until this hook succeeds, so
-`helm install` and `helm upgrade` will not report success until cluster
-templates are available. The underlying Ansible role uses a PATCH/POST
-pattern, making re-publish on upgrade safe and idempotent.
+**OSAC template publishing** (`osac-publish-templates`): This hook publishes
+the templates in the configured AAP collections (the default is
+`osac.templates`) to the Fulfillment Service. Standard AAP-backed workflows
+for VMaaS, CaaS, and MaaS use these templates. BMaaS uses them when its
+`BareMetalInstance` provisioning selects an AAP-published template. Examples
+include `osac.templates.ocp_virt_vm`, CaaS cluster templates, the shared
+`osac.templates.bm_host_provisioning` template used by the CaaS worker BMI
+path, and `osac.templates.ocp_4_20_ai_maas`.
+An init container waits
+for the Fulfillment REST gateway to be healthy (up to 600s), then launches the
+`osac-publish-templates` AAP job template and polls until it completes. Helm
+waits for this hook, and the install or upgrade fails if it does not succeed.
+The underlying Ansible role uses a PATCH/POST pattern, making re-publish on
+upgrade safe and idempotent.
 
-This hook is enabled by default (`aap.instanceGroups.publishTemplates.enabled: true`).
-To disable it (e.g., in environments without CaaS):
+This hook is enabled by default
+(`aap.instanceGroups.publishTemplates.enabled: true`). Keep it enabled for
+standard VMaaS, CaaS, and MaaS workflows, and for BMaaS when
+`BareMetalInstance` provisioning uses AAP-published templates. The chart-level
+flag remains available for control-plane-only or test deployments without
+these workflows and BMaaS deployments that do not use AAP-published
+`BareMetalInstance` templates; it is not a per-service toggle. It also controls
+the related AAP/Fulfillment issuer configuration. Set it to `false` only when
+no enabled workflow depends on templates from the configured collections:
+
+When disabled, the Helm chart does not run the publishing hook, so those
+templates are not registered in the Fulfillment Service by this chart.
 
 ```yaml
 aap:
@@ -563,9 +580,10 @@ oc logs -f job/osac-aap-bootstrap -n ${NAMESPACE}
 
 ### Template Publish Hook Failing
 
-The `osac-publish-templates` post-install hook must complete for Helm to
-report success. If it fails, cluster templates may be missing or incomplete
-(on upgrade, previously published templates may still exist).
+The `osac-publish-templates` post-install or post-upgrade hook must complete
+for Helm to report success. If it fails, templates from the configured AAP
+collections may be missing or incomplete in the Fulfillment Service (on
+upgrade, previously published templates may still exist).
 
 **Check hook pod status and logs:**
 

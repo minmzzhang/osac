@@ -437,8 +437,14 @@ Use this procedure when the cluster already meets the prerequisites.
   ```
 
   Use `--version 0.0.9-nightly.<build>` only to test unreleased fixes. The AAP
-  bootstrap job takes 10 to 40 minutes. Helm does not return until it and, for
-  CaaS, the `osac-publish-templates` hook have finished.
+  bootstrap job takes 10 to 40 minutes. Helm does not return until it and the
+  `osac-publish-templates` hook have finished. The hook is enabled by default
+  and publishes AAP templates used by standard VMaaS, CaaS, and MaaS
+  workflows. BMaaS uses them when `BareMetalInstance` provisioning selects an
+  AAP-published template. Leave it enabled for those workflows; it can be
+  disabled for control-plane-only or test deployments without AAP-backed
+  provisioning, or for BMaaS deployments that do not use AAP-published
+  `BareMetalInstance` templates.
 
   On Helm 4, later `helm upgrade` (or re-running `helm upgrade --install`)
   must include `--force-conflicts`. The AAP operator takes field ownership of
@@ -539,7 +545,7 @@ subchart's own `values.yaml` file.
 | `aap.instanceGroups.clusterFulfillment.enabled`, `aap.instanceGroups.clusterFulfillment.config`, `aap.instanceGroups.clusterFulfillment.secret` | The `cluster-fulfillment` instance group for CaaS provisioning. See [Section 6.2](#62-installing-osac-for-caas-with-the-netris-network-backend). |
 | `aap.instanceGroups.networkFulfillment.enabled`, `aap.instanceGroups.networkFulfillment.config`, `aap.instanceGroups.networkFulfillment.secret` | The `network-fulfillment` instance group for Netris. See [Section 6.2](#62-installing-osac-for-caas-with-the-netris-network-backend). |
 | `aap.instanceGroups.storageFulfillment.config.STORAGE_SNAPSHOTS_ENABLED` | Snapshot toggle for the `storage-operations` instance group. |
-| `aap.instanceGroups.publishTemplates.enabled` | Runs the postinstallation `osac-publish-templates` hook. Default `true`. Set it to `false` for VMaaS-only or BMaaS-only installations. |
+| `aap.instanceGroups.publishTemplates.enabled` | Runs the post-install and post-upgrade `osac-publish-templates` hook. Default `true`. Required by standard AAP-backed VMaaS, CaaS, and MaaS workflows, and by BMaaS when `BareMetalInstance` provisioning uses AAP-published templates. This chart-level opt-out is for deployments without those workflows; it is not a per-service toggle. Disabling it also omits the related AAP/Fulfillment issuer configuration. |
 | `aap.instanceGroups.publishTemplates.config.OSAC_TEMPLATE_COLLECTIONS`, `aap.instanceGroups.publishTemplates.config.OSAC_FULFILLMENT_SERVICE_URI` | The Ansible collections to publish and the internal Fulfillment Service URI. |
 
 **Table 5.6. Web console, BMaaS, and other parameters**
@@ -628,7 +634,7 @@ the cluster. Then follow [Section 4](#4-installing-osac).
    aap:
      instanceGroups:
        publishTemplates:
-         enabled: false
+         enabled: true
    ```
 
    `lvms: { enabled: true }` runs the `osac` chart's `register-local-storage`
@@ -795,6 +801,10 @@ backend. For the full variable reference, see
 
 1. In `my-values.yaml`, enable the BMaaS tier and the Metal3 backend:
 
+   This example uses AAP-backed `BareMetalInstance` provisioning, so keep
+   template publishing enabled. A BMaaS deployment that does not use
+   AAP-published `BareMetalInstance` templates can disable it.
+
    ```yaml
    global:
      services: { bmaas: { enabled: true }, vmaas: { enabled: false }, caas: { enabled: false }, maas: { enabled: false } }
@@ -813,7 +823,7 @@ backend. For the full variable reference, see
    aap:
      instanceGroups:
        publishTemplates:
-         enabled: false
+         enabled: true
    ```
 
    Set `bmf.metal3.namespace` to the namespace where your `BareMetalHost`
@@ -1343,12 +1353,19 @@ $ oc logs job/osac-publish-templates -n <namespace> -c wait-for-fulfillment
 $ oc logs job/osac-publish-templates -n <namespace> -c publish-templates
 ```
 
-The hook runs by default, mainly for CaaS. The init container polls the
-Fulfillment Service REST gateway for up to 600 seconds. The job then
-launches the `osac-publish-templates` AAP job template and requires a valid
-`osac-aap-api-token` Secret. To disable the hook for VMaaS-only or
-BMaaS-only installations, set `aap.instanceGroups.publishTemplates.enabled`
-to `false`.
+The hook runs by default and publishes the configured AAP template
+collections (default `osac.templates`) to the Fulfillment Service. Standard
+VMaaS, CaaS, and MaaS workflows depend on these published templates. BMaaS
+depends on them when `BareMetalInstance` provisioning selects an AAP-published
+template. The init container polls the Fulfillment Service REST gateway for up
+to 600 seconds. The job then launches the `osac-publish-templates` AAP job
+template and requires a valid `osac-aap-api-token` Secret. If a required
+template is missing from the catalog, check that
+`aap.instanceGroups.publishTemplates.enabled` is `true` and that the
+configured collections include the template. Set this value to `false` only
+when no enabled workflow depends on AAP-published templates, such as in a
+control-plane-only or test deployment, or a BMaaS deployment that does not use
+AAP-published `BareMetalInstance` templates.
 
 ### 11.10 The `fulfillment-*` pods are in `CrashLoopBackOff`
 
