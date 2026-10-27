@@ -49,9 +49,10 @@ runs:
       run: |
         set -euo pipefail
         RELEASES=$(gh api --paginate --slurp "repos/${REPO}/releases?per_page=100")
+        EXISTS=$(jq -r --arg tag "${TAG}" 'any(.[][]; .tag_name == $tag)' <<<"${RELEASES}")
         OPERATION=create
         NOTES_ARGS=(--generate-notes)
-        if jq -e --arg tag "${TAG}" 'any(.[][]; .tag_name == $tag)' <<<"${RELEASES}" >/dev/null; then
+        if [[ "${EXISTS}" == "true" ]]; then
           OPERATION=edit
           NOTES_ARGS=()
         fi

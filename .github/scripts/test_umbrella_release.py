@@ -28,7 +28,7 @@ with Path("gh-calls.jsonl").open("a") as output:
 if os.environ.get("FAIL") and os.environ["FAIL"] in arguments:
     sys.exit(9)
 if arguments == ["api", "--paginate", "--slurp", "repos/osac-project/osac/releases?per_page=100"]:
-    print(Path("releases.json").read_text())
+    print(os.environ.get("API_RESPONSE", Path("releases.json").read_text()))
 elif arguments[:2] in (["release", "create"], ["release", "edit"]):
     if arguments[2] != "graph-latest":
         assert "--verify-tag" in arguments
@@ -63,7 +63,7 @@ def condition(job: str, mode: str, results: dict[str, str], cancelled: bool = Fa
         {
             "always": lambda: True,
             "cancelled": lambda: cancelled,
-            "failure": lambda: not cancelled and "failure" in results.values(),
+            "failure": lambda: "failure" in results.values(),
             "contains": lambda choices, value: value in choices,
             "fromJSON": json.loads,
         },
@@ -110,7 +110,12 @@ class UmbrellaReleaseTests(unittest.TestCase):
         (self.directory / "releases.json").write_text(json.dumps([releases]))
 
     def fixture(
-        self, fallback: bool = False, missing_lock: bool = False, mismatch: bool = False, missing_metadata: bool = False
+        self,
+        fallback: bool = False,
+        missing_lock: bool = False,
+        mismatch: bool = False,
+        missing_metadata: bool = False,
+        nested: bool = False,
     ) -> None:
         chart = yaml.safe_load((ROOT / "osac-installer/charts/osac/Chart.yaml").read_text())
         chart["version"] = self.env["VERSION"]
@@ -137,6 +142,14 @@ class UmbrellaReleaseTests(unittest.TestCase):
         with tarfile.open(self.package, "w:gz") as archive:
             for name, value in entries.items():
                 content = yaml.safe_dump(value).encode()
+                if nested and name.startswith("osac/charts/"):
+                    nested_content = io.BytesIO()
+                    with tarfile.open(fileobj=nested_content, mode="w:gz") as dependency_archive:
+                        metadata = tarfile.TarInfo(f"{value['name']}/Chart.yaml")
+                        metadata.size = len(content)
+                        dependency_archive.addfile(metadata, io.BytesIO(content))
+                    content = nested_content.getvalue()
+                    name = f"osac/charts/{value['name']}-{value['version']}.tgz"
                 member = tarfile.TarInfo(name)
                 member.size = len(content)
                 archive.addfile(member, io.BytesIO(content))
@@ -200,6 +213,49 @@ class UmbrellaReleaseTests(unittest.TestCase):
         self.assertEqual(self.run_release().returncode, 0)
         self.assertIn("--latest=false", self.calls()[4])
 
+    def test_numeric_semver_build_metadata_and_drafts(self) -> None:
+        cases = [
+            ("7.4.2+build-rc.1", "osac/v7.4.1", False, False, True),
+            ("7.4.2", "osac/v7.4.2+other.2", False, False, True),
+            ("7.9.0", "osac/v7.10.0+build.1", False, False, False),
+            ("7.10.0", "osac/v7.9.0", False, False, True),
+            ("7.4.2", "osac/v99.0.0", False, True, True),
+            ("7.4.2", "osac/v99.0.0-rc.1", True, False, True),
+            ("7.4.2", "osac-operator/v99.0.0", False, False, True),
+            ("7.4.2", "osac/v7.4.2", False, True, True),
+        ]
+        for version, tag, prerelease, draft, latest in cases:
+            with self.subTest(version=version, tag=tag, draft=draft):
+                self.env["VERSION"] = version
+                self.fixture()
+                self.set_releases([release(tag, prerelease=prerelease, draft=draft)])
+                self.assertEqual(self.run_release().returncode, 0)
+                arguments = self.calls()[-2]
+                self.assertIn(f"--latest={str(latest).lower()}", arguments)
+                self.assertIn("--prerelease=false", arguments)
+                self.assertIn("--draft=false", arguments)
+                self.assertEqual(arguments[1], "edit" if tag == f"osac/v{version}" else "create")
+
+    def test_invalid_platform_api_data_fails_before_mutation(self) -> None:
+        for response in ("{invalid", '{"message": "unexpected"}', "[null]"):
+            with self.subTest(response=response):
+                (self.directory / "gh-calls.jsonl").write_text("")
+                self.assertNotEqual(self.run_release(API_RESPONSE=response).returncode, 0)
+                self.assertEqual(len(self.calls()), 1)
+
+    def test_documented_install_command_is_usable_shell(self) -> None:
+        self.assertEqual(self.run_release().returncode, 0)
+        notes = (self.directory / "umbrella-release-notes.md").read_text()
+        script = notes.split("```sh\n", 1)[1].split("```", 1)[0]
+        (self.bin / "helm").write_text('#!/bin/bash\nset -euo pipefail\nprintf "%s\\n" "$@" > helm-args.txt\n')
+        (self.bin / "helm").chmod(0o755)
+        self.assertEqual(self.run_shell(script).returncode, 0)
+        arguments = (self.directory / "helm-args.txt").read_text().splitlines()
+        self.assertEqual(arguments[:3], ["install", "osac", "oci://ghcr.io/osac-project/charts/osac"])
+        self.assertEqual(arguments[arguments.index("--version") + 1], self.version)
+        self.assertIn("service.externalHostname=fulfillment-api-osac.apps.example.com", arguments)
+        self.assertIn("service.internalHostname=fulfillment-internal-api-osac.apps.example.com", arguments)
+
     def test_prerelease_and_nightly_suffixes_never_latest(self) -> None:
         for version in ("7.4.2-rc.1", "7.4.2-nightly.20261027.abc.1.1"):
             with self.subTest(version=version):
@@ -242,6 +298,25 @@ class UmbrellaReleaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             package_manifest(self.package, "0.0.0")
 
+    def test_nested_archives_supply_missing_lock_versions_and_reject_mismatch(self) -> None:
+        self.fixture(fallback=True, missing_lock=True, nested=True)
+        self.assertEqual(self.run_release().returncode, 0)
+        manifest = json.loads((self.directory / "umbrella-dependencies.json").read_text())
+        self.assertEqual(manifest["dependencies"][0]["version"], "2.9.3")
+        self.fixture(nested=True, mismatch=True)
+        self.assertNotEqual(self.run_release().returncode, 0)
+
+    def test_component_invalid_api_response_fails_closed(self) -> None:
+        action = yaml.safe_load((ROOT / ".github/actions/create-component-release/action.yaml").read_text())
+        result = self.run_shell(
+            action["runs"]["steps"][0]["run"],
+            API_RESPONSE="{invalid",
+            TAG="osac-operator/v7.4.2",
+            COMPONENT="osac-operator",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(self.calls()), 1)
+
     def test_component_actual_shell_create_and_edit_opt_out(self) -> None:
         action = yaml.safe_load((ROOT / ".github/actions/create-component-release/action.yaml").read_text())
         script = action["runs"]["steps"][0]["run"]
@@ -271,6 +346,9 @@ class UmbrellaReleaseTests(unittest.TestCase):
         script = script.replace("${{ github.repository }}", "osac-project/osac")
         self.assertEqual(self.run_shell(script).returncode, 0)
         self.assertIn("--latest=false", self.calls()[0])
+        (self.directory / "gh-calls.jsonl").write_text("")
+        self.assertNotEqual(self.run_shell(script, FAIL="edit").returncode, 0)
+        self.assertEqual(len(self.calls()), 1)
         config = yaml.safe_load((ROOT / "fulfillment-service/.goreleaser.yaml").read_text())
         self.assertIs(config["release"]["make_latest"], False)
         self.assertEqual(config["release"]["prerelease"], "auto")
@@ -289,6 +367,16 @@ class UmbrellaReleaseTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--latest=false", self.calls()[0])
         self.assertEqual(script.count("--latest=false"), 1)
+        self.assertNotEqual(
+            self.run_shell(
+                "assets=()\n" + creation,
+                FAIL="create",
+                RELEASE_TAG="graph-latest",
+                GITHUB_REPOSITORY="osac-project/osac",
+                GITHUB_SHA="a" * 40,
+            ).returncode,
+            0,
+        )
 
 
 class ReleaseWorkflowContractTests(unittest.TestCase):

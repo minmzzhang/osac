@@ -1,5 +1,6 @@
 """Publish package-derived platform notes without changing immutable tags."""
 
+import io
 import json
 import os
 import re
@@ -35,16 +36,26 @@ def package_manifest(package: Path, version: str) -> dict[str, Any]:
             raise ValueError("Published package does not match the requested umbrella version")
         lock = read_yaml("osac/Chart.lock")
         locked = {entry["name"]: entry for entry in lock["dependencies"]}
+        bundled = {}
+        for member in archive.getmembers():
+            parts = member.name.split("/")
+            if len(parts) == 4 and parts[:2] == ["osac", "charts"] and parts[-1] == "Chart.yaml":
+                metadata = read_yaml(member.name)
+                bundled[parts[2]] = str(metadata["version"])
+            elif len(parts) == 3 and parts[:2] == ["osac", "charts"] and parts[-1].endswith(".tgz"):
+                with tarfile.open(fileobj=io.BytesIO(archive.extractfile(member).read()), mode="r:gz") as dependency:
+                    for nested in dependency.getmembers():
+                        if len(nested.name.split("/")) == 2 and nested.name.endswith("/Chart.yaml"):
+                            metadata = yaml.safe_load(dependency.extractfile(nested))
+                            name, version = metadata["name"], str(metadata["version"])
+                            if name in bundled and bundled[name] != version:
+                                raise ValueError(f"Ambiguous packaged versions for {name}")
+                            bundled[name] = version
         rows = []
         for dependency in chart.get("dependencies", []):
             name = dependency["name"]
             entry = locked.get(name, {})
-            packaged_version = None
-            for directory in (dependency.get("alias", name), name):
-                metadata = f"osac/charts/{directory}/Chart.yaml"
-                if metadata in archive.getnames():
-                    packaged_version = str(read_yaml(metadata)["version"])
-                    break
+            packaged_version = bundled.get(dependency.get("alias", name), bundled.get(name))
             resolved = str(entry["version"]) if "version" in entry else packaged_version
             if packaged_version and resolved != packaged_version:
                 raise ValueError(f"Package/lock version mismatch for {name}")

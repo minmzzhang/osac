@@ -1952,7 +1952,7 @@ jobs:
     needs: [prepare, build, unit-tests, integration-tests, security-tests, e2e-vmaas-test, e2e-caas-test, e2e-bmaas-test, promote-and-publish, publish-umbrella, tag, create-component-releases, publish-fulfillment-service-binaries, publish-fulfillment-service-proto, create-umbrella-release, notify-release]
     runs-on: osac-ci
     timeout-minutes: 10
-    if: failure()
+    if: failure() && !cancelled()
     permissions:
       # Only needed for the checkout step below (resolves the local
       # vault-slack-webhook composite action) -- least privilege.
