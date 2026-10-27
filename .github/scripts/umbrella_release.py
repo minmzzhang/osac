@@ -47,10 +47,10 @@ def package_manifest(package: Path, version: str) -> dict[str, Any]:
                     for nested in dependency.getmembers():
                         if len(nested.name.split("/")) == 2 and nested.name.endswith("/Chart.yaml"):
                             metadata = yaml.safe_load(dependency.extractfile(nested))
-                            name, version = metadata["name"], str(metadata["version"])
-                            if name in bundled and bundled[name] != version:
-                                raise ValueError(f"Ambiguous packaged versions for {name}")
-                            bundled[name] = version
+                            dep_name, dep_version = metadata["name"], str(metadata["version"])
+                            if dep_name in bundled and bundled[dep_name] != dep_version:
+                                raise ValueError(f"Ambiguous packaged versions for {dep_name}")
+                            bundled[dep_name] = dep_version
         rows = []
         for dependency in chart.get("dependencies", []):
             name = dependency["name"]

@@ -302,7 +302,12 @@ class UmbrellaReleaseTests(unittest.TestCase):
         self.fixture(fallback=True, missing_lock=True, nested=True)
         self.assertEqual(self.run_release().returncode, 0)
         manifest = json.loads((self.directory / "umbrella-dependencies.json").read_text())
+        self.assertEqual(manifest["version"], self.version)
         self.assertEqual(manifest["dependencies"][0]["version"], "2.9.3")
+        notes = (self.directory / "umbrella-release-notes.md").read_text()
+        self.assertIn(f"OSAC platform umbrella Helm chart **{self.version}**.", notes)
+        self.assertIn(f"--version '{self.version}'", notes)
+        self.assertIn(f"/blob/osac/v{self.version}/{GUIDE}", notes)
         self.fixture(nested=True, mismatch=True)
         self.assertNotEqual(self.run_release().returncode, 0)
 
