@@ -1760,7 +1760,7 @@ jobs:
   # Create the umbrella chart GitHub Release after component release pages,
   # including the resolved version of every chart published or pinned into
   # this release. This makes the OSAC platform release the repository's
-  # "latest" release even when this dispatch also bumps individual components.
+  # "latest" stable release unless a higher stable umbrella already exists.
   # -------------------------------------------------------------------
   create-umbrella-release:
     name: Create GitHub Release (OSAC platform chart)
@@ -1771,16 +1771,20 @@ jobs:
       - publish-fulfillment-service-binaries
       - publish-fulfillment-service-proto
     if: |
-      always() &&
+      always() && !cancelled() &&
       inputs.mode == 'release' &&
       needs.tag.result == 'success' &&
       contains(fromJSON('["success", "skipped"]'), needs.create-component-releases.result) &&
       contains(fromJSON('["success", "skipped"]'), needs.publish-fulfillment-service-binaries.result) &&
       contains(fromJSON('["success", "skipped"]'), needs.publish-fulfillment-service-proto.result)
+    concurrency:
+      group: osac-umbrella-recommendation
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write
+      actions: read
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       COMPONENT_VERSIONS: ${{ needs.prepare.outputs.component-versions }}
@@ -1788,51 +1792,25 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
+    - name: Checkout release automation
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+        persist-credentials: false
+
+    - uses: ./.github/actions/setup-python
+
+    - name: Download published umbrella package
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+      with:
+        name: nightly-${{ env.VERSION }}
+        path: umbrella-artifacts
+
     - name: Create or update umbrella chart release
+      env:
+        PACKAGE: umbrella-artifacts/osac-installer/osac-${{ env.VERSION }}.tgz
       run: |
         set -euo pipefail
-        TAG="osac/v${VERSION}"
-        TITLE="OSAC Platform Chart v${VERSION}"
-        COMPONENT_CHART_ROWS="$(jq -nr \
-          --argjson component_versions "${COMPONENT_VERSIONS}" \
-          '[
-            ["osac-operator-crds", $component_versions["osac-operator"]],
-            ["bare-metal-fulfillment-operator-crds", $component_versions["bare-metal-fulfillment-operator"]],
-            ["osac-operator", $component_versions["osac-operator"]],
-            ["fulfillment-service", $component_versions["fulfillment-service"]],
-            ["osac-aap", $component_versions["osac-aap"]],
-            ["bare-metal-fulfillment-operator", $component_versions["bare-metal-fulfillment-operator"]],
-            ["osac-metering", $component_versions["osac-metering"]],
-            ["csi-driver", $component_versions["osac-csi-driver"]],
-            ["csi-backends", $component_versions["osac-csi-driver"]],
-            ["osac-ui", $component_versions["osac-ui"]]
-          ]
-          | map(select(.[1] != null) | "| \(.[0]) | \(.[1]) |")
-          | .[]')"
-        NOTES="$(printf '%s\n\n%s\n\n%s\n\n%s\n%s\n%s\n\n%s\n\n%s\n%s\n%s\n' \
-          "This release publishes the OSAC platform umbrella Helm chart." \
-          "OCI artifact: oci://ghcr.io/osac-project/charts/osac (version ${VERSION})." \
-          "### OSAC platform chart" \
-          "| Chart | Version |" \
-          "| --- | --- |" \
-          "| **osac (umbrella)** | **${VERSION}** |" \
-          "### Component charts" \
-          "| Chart | Version |" \
-          "| --- | --- |" \
-          "${COMPONENT_CHART_ROWS}")"
-
-        gh release create "${TAG}" \
-          --repo "${REPO}" \
-          --title "${TITLE}" \
-          --notes "${NOTES}" \
-          --latest \
-          --verify-tag \
-        || gh release edit "${TAG}" \
-          --repo "${REPO}" \
-          --title "${TITLE}" \
-          --notes "${NOTES}" \
-          --latest \
-          --verify-tag
+        uv run --no-project --with pyyaml==6.0.3 python .github/scripts/umbrella_release.py
 
   # -------------------------------------------------------------------
   # Notify release success — the one and only "this run is genuinely
@@ -1852,12 +1830,13 @@ jobs:
     runs-on: osac-ci
     timeout-minutes: 10
     if: |
-      always() &&
+      always() && !cancelled() &&
       needs.tag.result == 'success' &&
       contains(fromJSON('["success", "skipped"]'), needs.create-component-releases.result) &&
       contains(fromJSON('["success", "skipped"]'), needs.publish-fulfillment-service-binaries.result) &&
       contains(fromJSON('["success", "skipped"]'), needs.publish-fulfillment-service-proto.result) &&
-      contains(fromJSON('["success", "skipped"]'), needs.create-umbrella-release.result)
+      (needs.create-umbrella-release.result == 'success' ||
+       (inputs.mode == 'nightly' && needs.create-umbrella-release.result == 'skipped'))
     permissions:
       # Look up the package version URL for the Slack notification
       packages: read

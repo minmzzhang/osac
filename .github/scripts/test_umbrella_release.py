@@ -1,0 +1,345 @@
+"""Exercise the workflow's real release consumers with synthetic data and fake gh."""
+
+import io
+import json
+import os
+import re
+import subprocess
+import sys
+import tarfile
+import tempfile
+import unittest
+from pathlib import Path
+
+import yaml
+from umbrella_release import GUIDE, PACKAGE_URL, package_manifest
+
+ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = yaml.safe_load((ROOT / ".github/workflows/osac-build-and-publish.yaml").read_text())
+FAKE_GH = r"""#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+arguments = sys.argv[1:]
+with Path("gh-calls.jsonl").open("a") as output:
+    output.write(json.dumps(arguments) + "\n")
+if os.environ.get("FAIL") and os.environ["FAIL"] in arguments:
+    sys.exit(9)
+if arguments == ["api", "--paginate", "--slurp", "repos/osac-project/osac/releases?per_page=100"]:
+    print(Path("releases.json").read_text())
+elif arguments[:2] in (["release", "create"], ["release", "edit"]):
+    if arguments[2] != "graph-latest":
+        assert "--verify-tag" in arguments
+    assert any(option.startswith("--latest=") for option in arguments)
+    releases = json.loads(Path("releases.json").read_text())
+    if arguments[1] == "create":
+        assert not any(entry["tag_name"] == arguments[2] for page in releases for entry in page)
+        releases[0].append({"tag_name": arguments[2], "draft": False, "prerelease": "--prerelease=true" in arguments})
+        Path("releases.json").write_text(json.dumps(releases))
+elif arguments[:2] == ["release", "upload"]:
+    assert arguments[3:] == ["umbrella-dependencies.json", "--repo", "osac-project/osac", "--clobber"]
+    assert Path(arguments[3]).is_file()
+elif arguments[:3] == ["api", "-X", "DELETE"]:
+    assert arguments[3] == "repos/osac-project/osac/git/refs/tags/v7.4.2"
+else:
+    raise AssertionError(f"Unexpected gh operation: {arguments}")
+"""
+
+
+def release(tag: str, prerelease: bool = False, draft: bool = False) -> dict[str, str | bool]:
+    return {"tag_name": tag, "prerelease": prerelease, "draft": draft}
+
+
+def condition(job: str, mode: str, results: dict[str, str], cancelled: bool = False) -> bool:
+    expression = WORKFLOW["jobs"][job]["if"]
+    expression = re.sub(r"needs\.([\w-]+)\.result", lambda match: repr(results[match[1]]), expression)
+    expression = expression.replace("inputs.mode", repr(mode)).replace("&&", " and ").replace("||", " or ")
+    expression = expression.replace("!cancelled()", "not cancelled()")
+    return eval(
+        " ".join(expression.split()),
+        {"__builtins__": {}},
+        {
+            "always": lambda: True,
+            "cancelled": lambda: cancelled,
+            "failure": lambda: not cancelled and "failure" in results.values(),
+            "contains": lambda choices, value: value in choices,
+            "fromJSON": json.loads,
+        },
+    )
+
+
+class UmbrellaReleaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        self.bin = self.directory / "bin"
+        self.bin.mkdir()
+        (self.bin / "gh").write_text(FAKE_GH)
+        (self.bin / "gh").chmod(0o755)
+        (self.bin / "uv").write_text(
+            "#!/bin/bash\nset -euo pipefail\n"
+            '[[ "$*" == "run --no-project --with pyyaml==6.0.3 python .github/scripts/umbrella_release.py" ]]\n'
+            'exec "$PYTHON" .github/scripts/umbrella_release.py\n'
+        )
+        (self.bin / "uv").chmod(0o755)
+        script_dir = self.directory / ".github/scripts"
+        script_dir.mkdir(parents=True)
+        (script_dir / "umbrella_release.py").symlink_to(ROOT / ".github/scripts/umbrella_release.py")
+        self.version = "7.4.2"
+        self.package = self.directory / f"umbrella-artifacts/osac-installer/osac-{self.version}.tgz"
+        self.package.parent.mkdir(parents=True)
+        self.component_versions = {"osac-csi-driver": "3.2.1"}
+        self.env = {
+            **os.environ,
+            "PATH": f"{self.bin}:{os.environ['PATH']}",
+            "HOME": str(self.directory),
+            "VERSION": self.version,
+            "PACKAGE": str(self.package),
+            "REPO": "osac-project/osac",
+            "COMPONENT_VERSIONS": json.dumps(self.component_versions),
+            "GH_TOKEN": "synthetic-test-token",
+            "PYTHON": sys.executable,
+        }
+        self.set_releases([])
+        self.fixture()
+
+    def set_releases(self, releases: list[dict[str, str | bool]]) -> None:
+        (self.directory / "releases.json").write_text(json.dumps([releases]))
+
+    def fixture(
+        self, fallback: bool = False, missing_lock: bool = False, mismatch: bool = False, missing_metadata: bool = False
+    ) -> None:
+        chart = yaml.safe_load((ROOT / "osac-installer/charts/osac/Chart.yaml").read_text())
+        chart["version"] = self.env["VERSION"]
+        entries = {}
+        locks = []
+        for index, dependency in enumerate(chart["dependencies"]):
+            version = f"2.{index}.3"
+            if "operator-crds" in dependency["name"]:
+                version = "2.9.3"
+            if dependency["name"] in ("osac-operator", "bare-metal-fulfillment-operator"):
+                version = "2.9.3"
+            repository = "file://fixture" if fallback and index == 0 else "oci://ghcr.io/osac-project/charts"
+            dependency.update(repository=repository, version=">=0.0.0-0" if fallback else version)
+            if not (missing_lock and index == 0):
+                locks.append({"name": dependency["name"], "version": version, "repository": repository})
+            entries[f"osac/charts/{dependency.get('alias', dependency['name'])}/Chart.yaml"] = {
+                "name": dependency["name"],
+                "version": "9.9.9" if mismatch and index == 0 else version,
+            }
+            if missing_metadata and index == 0:
+                del entries[f"osac/charts/{dependency.get('alias', dependency['name'])}/Chart.yaml"]
+        entries["osac/Chart.yaml"] = chart
+        entries["osac/Chart.lock"] = {"dependencies": locks}
+        with tarfile.open(self.package, "w:gz") as archive:
+            for name, value in entries.items():
+                content = yaml.safe_dump(value).encode()
+                member = tarfile.TarInfo(name)
+                member.size = len(content)
+                archive.addfile(member, io.BytesIO(content))
+
+    def run_shell(self, script: str, **environment: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", script],
+            cwd=self.directory,
+            env=self.env | environment,
+            capture_output=True,
+            text=True,
+        )
+
+    def run_release(self, **environment: str) -> subprocess.CompletedProcess[str]:
+        job = WORKFLOW["jobs"]["create-umbrella-release"]
+        script = next(
+            step["run"] for step in job["steps"] if step.get("name") == "Create or update umbrella chart release"
+        )
+        return self.run_shell(script, **environment)
+
+    def calls(self) -> list[list[str]]:
+        return [json.loads(line) for line in (self.directory / "gh-calls.jsonl").read_text().splitlines()]
+
+    def test_create_edit_and_deterministic_inventory(self) -> None:
+        self.assertEqual(self.run_release().returncode, 0)
+        self.assertIn("--latest=true", self.calls()[1])
+        self.assertIn("--prerelease=false", self.calls()[1])
+        notes = (self.directory / "umbrella-release-notes.md").read_text()
+        inventory = (self.directory / "umbrella-dependencies.json").read_text()
+        self.assertEqual(len(json.loads(inventory)["dependencies"]), 8)
+        self.assertIn("| osac-operator-crds | 2.9.3 |", notes)
+        self.assertIn("| bare-metal-fulfillment-operator-crds | 2.9.3 |", notes)
+        self.assertIn("| csi-driver | 3.2.1 |", notes)
+        installed, standalone = notes.split("### Separately published standalone charts")
+        self.assertNotIn("csi-driver", installed)
+        self.assertIn("not umbrella dependencies", standalone)
+        self.assertIn(PACKAGE_URL, notes)
+        self.assertIn("oci://ghcr.io/osac-project/charts/osac", notes)
+        self.assertIn("--version '7.4.2'", notes)
+        self.assertIn("--values my-values.yaml", notes)
+        self.assertIn("--namespace", notes)
+        self.assertIn(GUIDE, notes)
+        self.assertTrue((ROOT / GUIDE).is_file())
+        self.assertIn("not a compatibility or migration guarantee", notes)
+        self.assertEqual(self.run_release().returncode, 0)
+        self.assertEqual(self.calls()[4][1], "edit")
+        self.assertEqual(notes, (self.directory / "umbrella-release-notes.md").read_text())
+        self.assertEqual(inventory, (self.directory / "umbrella-dependencies.json").read_text())
+
+    def test_higher_stable_and_paginated_releases(self) -> None:
+        (self.directory / "releases.json").write_text(
+            json.dumps(
+                [
+                    [release("osac-operator/v99.0.0"), release("osac/v99.0.0", draft=True)],
+                    [release("osac/v99.0.0-rc.1", prerelease=True), release("osac/v8.0.0")],
+                ]
+            )
+        )
+        self.assertEqual(self.run_release().returncode, 0)
+        self.assertIn("--latest=false", self.calls()[1])
+        self.assertEqual(self.run_release().returncode, 0)
+        self.assertIn("--latest=false", self.calls()[4])
+
+    def test_prerelease_and_nightly_suffixes_never_latest(self) -> None:
+        for version in ("7.4.2-rc.1", "7.4.2-nightly.20261027.abc.1.1"):
+            with self.subTest(version=version):
+                self.env["VERSION"] = version
+                self.fixture()
+                self.assertEqual(self.run_release().returncode, 0)
+                self.assertEqual(self.run_release().returncode, 0)
+                for arguments in self.calls():
+                    if arguments[:2] in (["release", "create"], ["release", "edit"]):
+                        self.assertIn("--latest=false", arguments)
+                        self.assertIn("--prerelease=true", arguments)
+
+    def test_failures_are_not_treated_as_existing_releases(self) -> None:
+        for operation in ("api", "create", "upload", "--verify-tag"):
+            with self.subTest(operation=operation):
+                self.set_releases([])
+                (self.directory / "gh-calls.jsonl").write_text("")
+                self.assertNotEqual(self.run_release(FAIL=operation).returncode, 0)
+                self.assertFalse(any(call[:2] == ["release", "edit"] for call in self.calls()))
+        self.set_releases([release("osac/v7.4.2")])
+        self.assertNotEqual(self.run_release(FAIL="edit").returncode, 0)
+
+    def test_local_and_missing_fallback_inventory(self) -> None:
+        self.fixture(fallback=True, missing_lock=True)
+        self.env["COMPONENT_VERSIONS"] = "{}"
+        self.assertEqual(self.run_release().returncode, 0)
+        notes = (self.directory / "umbrella-release-notes.md").read_text()
+        self.assertIn("local fallback; not a published dependency", notes)
+        self.assertIn("missing lock entry", notes)
+        self.assertIn("not resolved/published this run", notes)
+        self.assertIn("| osac-operator-crds | 2.9.3 |", notes)
+        self.fixture(fallback=True, missing_lock=True, missing_metadata=True)
+        self.assertEqual(self.run_release().returncode, 0)
+        self.assertIn("unknown (not recorded)", (self.directory / "umbrella-release-notes.md").read_text())
+
+    def test_package_mismatch_blocks_release(self) -> None:
+        self.fixture(mismatch=True)
+        self.assertNotEqual(self.run_release().returncode, 0)
+        self.assertFalse((self.directory / "gh-calls.jsonl").exists())
+        with self.assertRaises(ValueError):
+            package_manifest(self.package, "0.0.0")
+
+    def test_component_actual_shell_create_and_edit_opt_out(self) -> None:
+        action = yaml.safe_load((ROOT / ".github/actions/create-component-release/action.yaml").read_text())
+        script = action["runs"]["steps"][0]["run"]
+        for version in ("v7.4.2", "v7.4.2-rc.1"):
+            for operation in ("create", "edit"):
+                with self.subTest(version=version, operation=operation):
+                    tag = f"osac-operator/{version}"
+                    self.set_releases([release(tag)] if operation == "edit" else [])
+                    result = self.run_shell(script, VERSION=version, TAG=tag, COMPONENT="osac-operator")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("--latest=false", self.calls()[-1])
+                    self.assertIn(f"--prerelease={'true' if '-' in version else 'false'}", self.calls()[-1])
+        self.assertNotEqual(
+            self.run_shell(script, FAIL="api", TAG="osac-operator/v7.4.2", COMPONENT="osac-operator").returncode, 0
+        )
+
+    def test_binary_consumer_and_goreleaser_opt_out(self) -> None:
+        workflow = yaml.safe_load((ROOT / ".github/workflows/publish-binaries.yaml").read_text())
+        script = next(
+            step["run"]
+            for step in workflow["jobs"]["publish-binaries"]["steps"]
+            if step.get("name") == "Point release at the scoped trigger tag"
+        )
+        script = script.replace("${{ inputs.version }}", "v7.4.2").replace(
+            "${{ inputs.tag }}", "fulfillment-service/v7.4.2"
+        )
+        script = script.replace("${{ github.repository }}", "osac-project/osac")
+        self.assertEqual(self.run_shell(script).returncode, 0)
+        self.assertIn("--latest=false", self.calls()[0])
+        config = yaml.safe_load((ROOT / "fulfillment-service/.goreleaser.yaml").read_text())
+        self.assertIs(config["release"]["make_latest"], False)
+        self.assertEqual(config["release"]["prerelease"], "auto")
+
+    def test_graphify_only_release_creation_opts_out(self) -> None:
+        workflow = yaml.safe_load((ROOT / ".github/workflows/graphify-brain-refresh.yaml").read_text())
+        steps = [step for job in workflow["jobs"].values() for step in job["steps"]]
+        script = next(step["run"] for step in steps if step.get("name") == "Publish to GH Release")
+        creation = script[script.index("gh release create") : script.index("\nfi", script.index("gh release create"))]
+        result = self.run_shell(
+            "assets=(graphify-bundle.tar.gz)\n" + creation,
+            RELEASE_TAG="graph-latest",
+            GITHUB_REPOSITORY="osac-project/osac",
+            GITHUB_SHA="a" * 40,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--latest=false", self.calls()[0])
+        self.assertEqual(script.count("--latest=false"), 1)
+
+
+class ReleaseWorkflowContractTests(unittest.TestCase):
+    def test_notification_and_publication_matrix(self) -> None:
+        jobs = WORKFLOW["jobs"]
+        results = {name: "success" for name in jobs}
+        for mode in ("release", "nightly"):
+            for outcome in ("success", "failure", "skipped", "cancelled"):
+                for cancelled in (False, True):
+                    with self.subTest(mode=mode, outcome=outcome, cancelled=cancelled):
+                        values = results | {"create-umbrella-release": outcome}
+                        expected = not cancelled and (
+                            outcome == "success" or (mode == "nightly" and outcome == "skipped")
+                        )
+                        self.assertEqual(condition("notify-release", mode, values, cancelled), expected)
+                        self.assertEqual(
+                            condition("notify-failure", mode, values, cancelled), outcome == "failure" and not cancelled
+                        )
+                        self.assertEqual(
+                            condition("create-umbrella-release", mode, values, cancelled),
+                            mode == "release" and not cancelled,
+                        )
+        for dependency in (
+            "tag",
+            "create-component-releases",
+            "publish-fulfillment-service-binaries",
+            "publish-fulfillment-service-proto",
+        ):
+            for outcome in ("failure", "cancelled"):
+                with self.subTest(dependency=dependency, outcome=outcome):
+                    values = results | {dependency: outcome}
+                    self.assertFalse(condition("create-umbrella-release", "release", values))
+                    self.assertFalse(condition("notify-release", "release", values))
+            if dependency != "tag":
+                self.assertTrue(condition("create-umbrella-release", "release", results | {dependency: "skipped"}))
+        for name in ("notify-release", "notify-failure"):
+            self.assertIn("create-umbrella-release", jobs[name]["needs"])
+        self.assertIn("publish-umbrella", jobs["tag"]["needs"])
+        self.assertEqual(jobs["create-umbrella-release"]["concurrency"]["cancel-in-progress"], False)
+
+    def test_ci_consumes_tests_and_workflow_consumes_helper(self) -> None:
+        ci = (ROOT / ".github/workflows/pre-commit.yaml").read_text()
+        self.assertIn("unittest discover -s .github/scripts -p test_umbrella_release.py", ci)
+        script = str(WORKFLOW["jobs"]["create-umbrella-release"]["steps"])
+        self.assertIn(".github/scripts/umbrella_release.py", script)
+        self.assertIn("nightly-${{ env.VERSION }}", script)
+        self.assertIn("umbrella-artifacts/osac-installer/osac-${{ env.VERSION }}.tgz", script)
+        workflow = (ROOT / ".github/workflows/osac-build-and-publish.yaml").read_text()
+        self.assertIn("refusing to re-release an already-published version", workflow)
+        self.assertNotIn("trigger-konflux", str(WORKFLOW["jobs"]["create-umbrella-release"]["needs"]))
+
+
+if __name__ == "__main__":
+    unittest.main()

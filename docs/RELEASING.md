@@ -21,7 +21,8 @@ In release mode, `tag` also fans out to three more jobs —
 `create-component-releases`, `publish-fulfillment-service-binaries`, and
 `publish-fulfillment-service-proto`. After those finish,
 `create-umbrella-release` publishes the OSAC chart's GitHub Release and
-marks it as the repository's latest release. `notify-release` waits for all
+marks the highest stable umbrella version as the repository's Latest release.
+Prereleases are explicitly marked and never become Latest. `notify-release` waits for all
 four jobs before announcing success, so a failure cannot be contradicted by
 an already-sent success message. See "What you get on success" below for
 the release pages and artifacts this produces.
@@ -135,15 +136,27 @@ for validating the release *mechanism* itself (e.g. after a change to
 **What you get on success:**
 - `osac/v<release_version>` — a real, permanent git tag and a GitHub
   Release titled `OSAC Platform Chart v<release_version>`. This release is
-  marked as the repository's latest release and links to the published
-  umbrella chart at `oci://ghcr.io/osac-project/charts/osac`. Its notes
-  show the umbrella chart first in its own section, followed by the resolved
-  component chart versions, including charts pinned to existing releases.
+  eligible for Latest only when it is stable and no higher stable umbrella
+  release already exists. Component releases and the floating graph release
+  explicitly opt out of Latest, including binary releases at creation time.
+  Its notes link to the [published package](https://github.com/orgs/osac-project/packages/container/package/charts%2Fosac)
+  and retain `oci://ghcr.io/osac-project/charts/osac` for Helm.
+  The dependency inventory comes from the exact published package's chart
+  metadata and `Chart.lock`, including reused versions and both operator CRD
+  charts. A local dependency fallback or missing lock entry is explicitly
+  labeled, not silently omitted or described as a published OCI dependency.
+  The inventory is also attached as `umbrella-dependencies.json`.
+  Separately published `csi-driver` and `csi-backends` charts are listed in
+  their own section: neither is installed by the umbrella chart.
+  Notes include an exact version-pinned install command and a link to the
+  [customer installation guide](guides/installation/customer-install-guide.md).
+  Complete its prerequisites and prepare your values before installing.
 - A real `<component>/vX.Y.Z` tag for every component that was actually
   bumped this run.
-- The published umbrella chart's `Chart.lock` resolves every dependency
-  to its real, already-published OCI version — no `file://` paths, no
-  nightly suffixes anywhere.
+- The published umbrella chart's `Chart.lock` records its resolved dependencies.
+  Components with resolved release versions use pinned OCI dependencies;
+  components without a release can still use their committed local fallback.
+  The release inventory makes that distinction visible.
 - Every image and chart signed with cosign; see the root
   [`README.md`](../README.md#verifying-container-image-signatures) for
   how to verify a specific artifact.
@@ -193,6 +206,38 @@ signed and with an SBOM attached, and gets a real Pyxis catalog entry
 plus a stage errata advisory. The GHCR-side publish and the Konflux
 staging release are independent — a failure in one doesn't undo the
 other.
+
+## Release retries and upgrades
+
+Retrying the umbrella release job uses the already-published package and edits
+an existing release instead of treating every create failure as an existing
+release. It refreshes the same notes and inventory asset without moving tags.
+API, missing-tag, or asset-publication failures still fail the job. This does
+not make a new full dispatch for an already-published version valid: the
+existing immutable-version guard in `prepare` remains in place.
+
+Release-job retries cannot move Latest back to an older stable umbrella.
+Nightly mode creates no GitHub Release; a release-mode version with a
+prerelease suffix, including a nightly suffix, is marked prerelease and
+explicitly excluded from Latest. Cancellation prevents the umbrella release
+and success notification jobs from starting; a release publication failure
+reaches the failure notification instead of a success message. Optional
+Konflux staging remains independent of this GHCR publication path.
+
+The version inventory is not an upgrade compatibility guarantee. Before an
+upgrade, compare the installed and target inventories, read the affected
+components' release notes and installation guide, back up persistent data and
+configuration, and check CRD migrations and required values changes. Do not
+assume Helm upgrades CRDs automatically. Maintainers should add verified
+release-specific upgrade or migration notes when applicable; do not invent
+an upgrade path from version numbers alone.
+
+Release automation changes have offline regression coverage in the required
+pre-commit CI job. Run the same tests locally without publishing anything:
+
+```sh
+uv run --no-project --with pyyaml==6.0.3 python -m unittest discover -s .github/scripts -p test_umbrella_release.py -v
+```
 
 ## Releasing a new component version
 
