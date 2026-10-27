@@ -137,8 +137,8 @@ for validating the release *mechanism* itself (e.g. after a change to
   Release titled `OSAC Platform Chart v<release_version>`. This release is
   marked as the repository's latest release and links to the published
   umbrella chart at `oci://ghcr.io/osac-project/charts/osac`. Its notes
-  include a Chart / Version table for the umbrella chart and every resolved
-  component chart, including charts pinned to existing component releases.
+  show the umbrella chart first in its own section, followed by the resolved
+  component chart versions, including charts pinned to existing releases.
 - A real `<component>/vX.Y.Z` tag for every component that was actually
   bumped this run.
 - The published umbrella chart's `Chart.lock` resolves every dependency

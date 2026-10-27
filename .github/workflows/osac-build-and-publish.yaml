@@ -1793,9 +1793,8 @@ jobs:
         set -euo pipefail
         TAG="osac/v${VERSION}"
         TITLE="OSAC Platform Chart v${VERSION}"
-        CHART_ROWS="$(jq -nr \
+        COMPONENT_CHART_ROWS="$(jq -nr \
           --argjson component_versions "${COMPONENT_VERSIONS}" \
-          --arg umbrella_version "${VERSION}" \
           '[
             ["osac-operator-crds", $component_versions["osac-operator"]],
             ["bare-metal-fulfillment-operator-crds", $component_versions["bare-metal-fulfillment-operator"]],
@@ -1806,18 +1805,21 @@ jobs:
             ["osac-metering", $component_versions["osac-metering"]],
             ["csi-driver", $component_versions["osac-csi-driver"]],
             ["csi-backends", $component_versions["osac-csi-driver"]],
-            ["osac-ui", $component_versions["osac-ui"]],
-            ["osac (umbrella)", $umbrella_version]
+            ["osac-ui", $component_versions["osac-ui"]]
           ]
           | map(select(.[1] != null) | "| \(.[0]) | \(.[1]) |")
           | .[]')"
-        NOTES="$(printf '%s\n\n%s\n\n%s\n\n%s\n%s\n%s\n' \
+        NOTES="$(printf '%s\n\n%s\n\n%s\n\n%s\n%s\n%s\n\n%s\n\n%s\n%s\n%s\n' \
           "This release publishes the OSAC platform umbrella Helm chart." \
           "OCI artifact: oci://ghcr.io/osac-project/charts/osac (version ${VERSION})." \
-          "### Chart versions in this release" \
+          "### OSAC platform chart" \
           "| Chart | Version |" \
           "| --- | --- |" \
-          "${CHART_ROWS}")"
+          "| **osac (umbrella)** | **${VERSION}** |" \
+          "### Component charts" \
+          "| Chart | Version |" \
+          "| --- | --- |" \
+          "${COMPONENT_CHART_ROWS}")"
 
         gh release create "${TAG}" \
           --repo "${REPO}" \
