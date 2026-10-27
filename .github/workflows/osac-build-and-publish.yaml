@@ -1757,9 +1757,10 @@ jobs:
       buf-token: ${{ secrets.BUF_TOKEN }}
 
   # -------------------------------------------------------------------
-  # Create the umbrella chart GitHub Release after the component release
-  # pages. This makes the OSAC platform release the repository's "latest"
-  # release even when this dispatch also bumps individual components.
+  # Create the umbrella chart GitHub Release after component release pages,
+  # including the resolved version of every chart published or pinned into
+  # this release. This makes the OSAC platform release the repository's
+  # "latest" release even when this dispatch also bumps individual components.
   # -------------------------------------------------------------------
   create-umbrella-release:
     name: Create GitHub Release (OSAC platform chart)
@@ -1782,6 +1783,7 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
+      COMPONENT_VERSIONS: ${{ needs.prepare.outputs.component-versions }}
       REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -1791,10 +1793,31 @@ jobs:
         set -euo pipefail
         TAG="osac/v${VERSION}"
         TITLE="OSAC Platform Chart v${VERSION}"
-        NOTES="$(printf '%s\n\n%s\n\n%s\n' \
+        CHART_ROWS="$(jq -nr \
+          --argjson component_versions "${COMPONENT_VERSIONS}" \
+          --arg umbrella_version "${VERSION}" \
+          '[
+            ["osac-operator-crds", $component_versions["osac-operator"]],
+            ["bare-metal-fulfillment-operator-crds", $component_versions["bare-metal-fulfillment-operator"]],
+            ["osac-operator", $component_versions["osac-operator"]],
+            ["fulfillment-service", $component_versions["fulfillment-service"]],
+            ["osac-aap", $component_versions["osac-aap"]],
+            ["bare-metal-fulfillment-operator", $component_versions["bare-metal-fulfillment-operator"]],
+            ["osac-metering", $component_versions["osac-metering"]],
+            ["csi-driver", $component_versions["osac-csi-driver"]],
+            ["csi-backends", $component_versions["osac-csi-driver"]],
+            ["osac-ui", $component_versions["osac-ui"]],
+            ["osac (umbrella)", $umbrella_version]
+          ]
+          | map(select(.[1] != null) | "| \(.[0]) | \(.[1]) |")
+          | .[]')"
+        NOTES="$(printf '%s\n\n%s\n\n%s\n\n%s\n%s\n%s\n' \
           "This release publishes the OSAC platform umbrella Helm chart." \
           "OCI artifact: oci://ghcr.io/osac-project/charts/osac (version ${VERSION})." \
-          "The chart's Chart.lock records the component versions included in this tested release.")"
+          "### Chart versions in this release" \
+          "| Chart | Version |" \
+          "| --- | --- |" \
+          "${CHART_ROWS}")"
 
         gh release create "${TAG}" \
           --repo "${REPO}" \
