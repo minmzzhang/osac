@@ -1417,8 +1417,8 @@ jobs:
   # saw "Published" in Slack before create-component-releases/
   # publish-fulfillment-service-binaries/publish-fulfillment-service-proto
   # (all of which need this job and can still fail) had even started.
-  # notify-release below waits for all of those too before announcing
-  # success, so a later failure among them can't contradict an
+  # notify-release below waits for all of those, plus the umbrella release
+  # page, before announcing success, so a later failure can't contradict an
   # already-sent success message.
   # -------------------------------------------------------------------
   tag:
@@ -1757,22 +1757,73 @@ jobs:
       buf-token: ${{ secrets.BUF_TOKEN }}
 
   # -------------------------------------------------------------------
+  # Create the umbrella chart GitHub Release after the component release
+  # pages. This makes the OSAC platform release the repository's "latest"
+  # release even when this dispatch also bumps individual components.
+  # -------------------------------------------------------------------
+  create-umbrella-release:
+    name: Create GitHub Release (OSAC platform chart)
+    needs:
+      - prepare
+      - tag
+      - create-component-releases
+      - publish-fulfillment-service-binaries
+      - publish-fulfillment-service-proto
+    if: |
+      always() &&
+      inputs.mode == 'release' &&
+      needs.tag.result == 'success' &&
+      contains(fromJSON('["success", "skipped"]'), needs.create-component-releases.result) &&
+      contains(fromJSON('["success", "skipped"]'), needs.publish-fulfillment-service-binaries.result) &&
+      contains(fromJSON('["success", "skipped"]'), needs.publish-fulfillment-service-proto.result)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+    - name: Create or update umbrella chart release
+      run: |
+        set -euo pipefail
+        TAG="osac/v${VERSION}"
+        TITLE="OSAC Platform Chart v${VERSION}"
+        NOTES="$(printf '%s\n\n%s\n\n%s\n' \
+          "This release publishes the OSAC platform umbrella Helm chart." \
+          "OCI artifact: oci://ghcr.io/osac-project/charts/osac (version ${VERSION})." \
+          "The chart's Chart.lock records the component versions included in this tested release.")"
+
+        gh release create "${TAG}" \
+          --repo "${REPO}" \
+          --title "${TITLE}" \
+          --notes "${NOTES}" \
+          --latest \
+          --verify-tag \
+        || gh release edit "${TAG}" \
+          --repo "${REPO}" \
+          --title "${TITLE}" \
+          --notes "${NOTES}" \
+          --latest \
+          --verify-tag
+
+  # -------------------------------------------------------------------
   # Notify release success — the one and only "this run is genuinely
   # done and everything published" signal, deliberately separate from
   # tag above. Waits on create-component-releases/publish-fulfillment-
-  # service-binaries/publish-fulfillment-service-proto in addition to
-  # tag itself (each tolerated as success OR skipped: skipped is the
-  # normal outcome in nightly mode, or in a release that isn't bumping
-  # fulfillment-service/any of the 5 GitHub-Release-eligible components)
-  # so a failure in any of them is never contradicted by an
-  # already-sent "Published" message -- confirmed live: before this
+  # service-binaries/publish-fulfillment-service-proto and the umbrella
+  # chart release in addition to tag itself (release-only work is tolerated
+  # as skipped when it doesn't apply) so a failure is never contradicted by
+  # an already-sent "Published" message -- confirmed live: before this
   # job existed, tag-and-notify posted success immediately after
   # tagging, so a subsequent publish-proto failure produced both a green
   # success and a red failure message in Slack for the same run.
   # -------------------------------------------------------------------
   notify-release:
     name: Notify release success
-    needs: [prepare, tag, create-component-releases, publish-fulfillment-service-binaries, publish-fulfillment-service-proto]
+    needs: [prepare, tag, create-component-releases, publish-fulfillment-service-binaries, publish-fulfillment-service-proto, create-umbrella-release]
     runs-on: osac-ci
     timeout-minutes: 10
     if: |
@@ -1780,7 +1831,8 @@ jobs:
       needs.tag.result == 'success' &&
       contains(fromJSON('["success", "skipped"]'), needs.create-component-releases.result) &&
       contains(fromJSON('["success", "skipped"]'), needs.publish-fulfillment-service-binaries.result) &&
-      contains(fromJSON('["success", "skipped"]'), needs.publish-fulfillment-service-proto.result)
+      contains(fromJSON('["success", "skipped"]'), needs.publish-fulfillment-service-proto.result) &&
+      contains(fromJSON('["success", "skipped"]'), needs.create-umbrella-release.result)
     permissions:
       # Look up the package version URL for the Slack notification
       packages: read
@@ -1893,7 +1945,7 @@ jobs:
   # -------------------------------------------------------------------
   notify-failure:
     name: Notify failure
-    needs: [prepare, build, unit-tests, integration-tests, security-tests, e2e-vmaas-test, e2e-caas-test, e2e-bmaas-test, promote-and-publish, publish-umbrella, tag, create-component-releases, publish-fulfillment-service-binaries, publish-fulfillment-service-proto, notify-release]
+    needs: [prepare, build, unit-tests, integration-tests, security-tests, e2e-vmaas-test, e2e-caas-test, e2e-bmaas-test, promote-and-publish, publish-umbrella, tag, create-component-releases, publish-fulfillment-service-binaries, publish-fulfillment-service-proto, create-umbrella-release, notify-release]
     runs-on: osac-ci
     timeout-minutes: 10
     if: failure()

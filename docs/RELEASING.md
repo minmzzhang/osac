@@ -19,12 +19,12 @@ workflow_dispatch     ──►  osac-release.yaml         ──┘        (pre
 
 In release mode, `tag` also fans out to three more jobs —
 `create-component-releases`, `publish-fulfillment-service-binaries`, and
-`publish-fulfillment-service-proto` — and `notify-release` waits for all
-three (tolerating each as `skipped`, the normal outcome in nightly mode or
-when a release doesn't touch the relevant components) before announcing
-success, so a later failure in any of them can't be contradicted by an
-already-sent success message. See "What you get on success" below for
-what each of those three actually produces.
+`publish-fulfillment-service-proto`. After those finish,
+`create-umbrella-release` publishes the OSAC chart's GitHub Release and
+marks it as the repository's latest release. `notify-release` waits for all
+four jobs before announcing success, so a failure cannot be contradicted by
+an already-sent success message. See "What you get on success" below for
+the release pages and artifacts this produces.
 
 - **`osac-build-and-publish.yaml`** — the real pipeline: resolves every
   component's version, builds and tests whatever needs building, packages
@@ -133,7 +133,10 @@ for validating the release *mechanism* itself (e.g. after a change to
 `osac-build-and-publish.yaml`); a real release should run the full gate.
 
 **What you get on success:**
-- `osac/v<release_version>` — a real, permanent git tag.
+- `osac/v<release_version>` — a real, permanent git tag and a GitHub
+  Release titled `OSAC Platform Chart v<release_version>`. This release is
+  marked as the repository's latest release and links to the published
+  umbrella chart at `oci://ghcr.io/osac-project/charts/osac`.
 - A real `<component>/vX.Y.Z` tag for every component that was actually
   bumped this run.
 - The published umbrella chart's `Chart.lock` resolves every dependency
@@ -145,7 +148,8 @@ for validating the release *mechanism* itself (e.g. after a change to
 - A plain changelog-style GitHub Release page for every bumped component
   among `osac-operator`, `osac-aap`, `bare-metal-fulfillment-operator`,
   `osac-csi-driver`, and `osac-metering` (`osac-ui` never gets one, on any
-  release).
+  release). These component releases remain separate from the umbrella
+  chart release and are titled with their component names.
 - If `fulfillment-service` was bumped this run: its own GitHub Release
   page too, but a different kind — created by goreleaser with its signed
   release binaries attached, not the plain changelog style above — plus
