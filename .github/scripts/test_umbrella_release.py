@@ -1,5 +1,6 @@
 """Exercise the workflow's real release consumers with synthetic data and fake gh."""
 
+import ast
 import io
 import json
 import os
@@ -10,6 +11,8 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 import yaml
 from umbrella_release import GUIDE, PACKAGE_URL, package_manifest
@@ -49,29 +52,57 @@ else:
 
 
 def release(tag: str, prerelease: bool = False, draft: bool = False) -> dict[str, str | bool]:
+    """Create the release API fields used to select the stable recommendation."""
     return {"tag_name": tag, "prerelease": prerelease, "draft": draft}
 
 
 def condition(job: str, mode: str, results: dict[str, str], cancelled: bool = False) -> bool:
+    """Interpret the workflow's limited condition syntax without executing Python."""
     expression = WORKFLOW["jobs"][job]["if"]
     expression = re.sub(r"needs\.([\w-]+)\.result", lambda match: repr(results[match[1]]), expression)
     expression = expression.replace("inputs.mode", repr(mode)).replace("&&", " and ").replace("||", " or ")
     expression = expression.replace("!cancelled()", "not cancelled()")
-    return eval(
-        " ".join(expression.split()),
-        {"__builtins__": {}},
-        {
-            "always": lambda: True,
-            "cancelled": lambda: cancelled,
-            "failure": lambda: "failure" in results.values(),
-            "contains": lambda choices, value: value in choices,
-            "fromJSON": json.loads,
-        },
-    )
+    statuses = {"always": True, "cancelled": cancelled, "failure": "failure" in results.values()}
+
+    def interpret(node: ast.AST) -> Any:
+        """Allow literals, boolean operators, equality, and named workflow functions."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, bool)):
+            return node.value
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
+            # Visit every branch so short-circuiting cannot hide unsupported syntax.
+            values = [interpret(value) for value in node.values]
+            return all(values) if isinstance(node.op, ast.And) else any(values)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return not interpret(node.operand)
+        if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
+            return interpret(node.left) == interpret(node.comparators[0])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
+            arguments = [interpret(argument) for argument in node.args]
+            if node.func.id in statuses and not arguments:
+                return statuses[node.func.id]
+            if node.func.id == "fromJSON" and len(arguments) == 1 and isinstance(arguments[0], str):
+                choices = json.loads(arguments[0])
+                if isinstance(choices, list) and all(isinstance(choice, str) for choice in choices):
+                    return choices
+            if (
+                node.func.id == "contains"
+                and len(arguments) == 2
+                and isinstance(arguments[0], list)
+                and isinstance(arguments[1], str)
+            ):
+                return arguments[1] in arguments[0]
+        raise ValueError(f"Unsupported workflow condition syntax: {ast.dump(node)}")
+
+    try:
+        tree = ast.parse(" ".join(expression.split()), mode="eval")
+    except SyntaxError as error:
+        raise ValueError("Invalid workflow condition syntax") from error
+    return bool(interpret(tree.body))
 
 
 class UmbrellaReleaseTests(unittest.TestCase):
     def setUp(self) -> None:
+        """Isolate release files and replace external publishers with local fakes."""
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
@@ -107,6 +138,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
         self.fixture()
 
     def set_releases(self, releases: list[dict[str, str | bool]]) -> None:
+        """Store synthetic paginated API results for release selection checks."""
         (self.directory / "releases.json").write_text(json.dumps([releases]))
 
     def fixture(
@@ -117,6 +149,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
         missing_metadata: bool = False,
         nested: bool = False,
     ) -> None:
+        """Package chart and lock metadata with optional fallback or mismatch cases."""
         chart = yaml.safe_load((ROOT / "osac-installer/charts/osac/Chart.yaml").read_text())
         chart["version"] = self.env["VERSION"]
         entries = {}
@@ -155,6 +188,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
                 archive.addfile(member, io.BytesIO(content))
 
     def run_shell(self, script: str, **environment: str) -> subprocess.CompletedProcess[str]:
+        """Run a consumer with strict Bash settings and isolated publisher fakes."""
         return subprocess.run(
             ["bash", "-euo", "pipefail", "-c", script],
             cwd=self.directory,
@@ -164,6 +198,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
         )
 
     def run_release(self, **environment: str) -> subprocess.CompletedProcess[str]:
+        """Exercise the workflow's actual publication step with synthetic inputs."""
         job = WORKFLOW["jobs"]["create-umbrella-release"]
         script = next(
             step["run"] for step in job["steps"] if step.get("name") == "Create or update umbrella chart release"
@@ -171,9 +206,11 @@ class UmbrellaReleaseTests(unittest.TestCase):
         return self.run_shell(script, **environment)
 
     def calls(self) -> list[list[str]]:
+        """Read captured GitHub CLI arguments to inspect publication side effects."""
         return [json.loads(line) for line in (self.directory / "gh-calls.jsonl").read_text().splitlines()]
 
     def test_create_edit_and_deterministic_inventory(self) -> None:
+        """Retries must retain package-derived inventory and customer install guidance."""
         self.assertEqual(self.run_release().returncode, 0)
         self.assertIn("--latest=true", self.calls()[1])
         self.assertIn("--prerelease=false", self.calls()[1])
@@ -200,6 +237,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
         self.assertEqual(inventory, (self.directory / "umbrella-dependencies.json").read_text())
 
     def test_higher_stable_and_paginated_releases(self) -> None:
+        """A newer stable umbrella on a later API page must keep Latest."""
         (self.directory / "releases.json").write_text(
             json.dumps(
                 [
@@ -214,6 +252,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
         self.assertIn("--latest=false", self.calls()[4])
 
     def test_numeric_semver_build_metadata_and_drafts(self) -> None:
+        """Only published stable umbrella versions affect numeric version ordering."""
         cases = [
             ("7.4.2+build-rc.1", "osac/v7.4.1", False, False, True),
             ("7.4.2", "osac/v7.4.2+other.2", False, False, True),
@@ -237,6 +276,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
                 self.assertEqual(arguments[1], "edit" if tag == f"osac/v{version}" else "create")
 
     def test_invalid_platform_api_data_fails_before_mutation(self) -> None:
+        """Malformed release API responses must prevent all publication writes."""
         for response in ("{invalid", '{"message": "unexpected"}', "[null]"):
             with self.subTest(response=response):
                 (self.directory / "gh-calls.jsonl").write_text("")
@@ -244,6 +284,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
                 self.assertEqual(len(self.calls()), 1)
 
     def test_documented_install_command_is_usable_shell(self) -> None:
+        """The copied install example must pass the intended version and hostnames."""
         self.assertEqual(self.run_release().returncode, 0)
         notes = (self.directory / "umbrella-release-notes.md").read_text()
         script = notes.split("```sh\n", 1)[1].split("```", 1)[0]
@@ -257,6 +298,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
         self.assertIn("service.internalHostname=fulfillment-internal-api-osac.apps.example.com", arguments)
 
     def test_prerelease_and_nightly_suffixes_never_latest(self) -> None:
+        """Evaluation versions must stay prereleases across creation and retries."""
         for version in ("7.4.2-rc.1", "7.4.2-nightly.20261027.abc.1.1"):
             with self.subTest(version=version):
                 self.env["VERSION"] = version
@@ -269,6 +311,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
                         self.assertIn("--prerelease=true", arguments)
 
     def test_failures_are_not_treated_as_existing_releases(self) -> None:
+        """API, tag verification, and publication failures must propagate to the job."""
         for operation in ("api", "create", "upload", "--verify-tag"):
             with self.subTest(operation=operation):
                 self.set_releases([])
@@ -279,6 +322,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
         self.assertNotEqual(self.run_release(FAIL="edit").returncode, 0)
 
     def test_local_and_missing_fallback_inventory(self) -> None:
+        """Inventory must distinguish local fallbacks and unavailable package metadata."""
         self.fixture(fallback=True, missing_lock=True)
         self.env["COMPONENT_VERSIONS"] = "{}"
         self.assertEqual(self.run_release().returncode, 0)
@@ -292,6 +336,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
         self.assertIn("unknown (not recorded)", (self.directory / "umbrella-release-notes.md").read_text())
 
     def test_package_mismatch_blocks_release(self) -> None:
+        """Conflicting package, lock, or requested versions must prevent publication."""
         self.fixture(mismatch=True)
         self.assertNotEqual(self.run_release().returncode, 0)
         self.assertFalse((self.directory / "gh-calls.jsonl").exists())
@@ -299,6 +344,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
             package_manifest(self.package, "0.0.0")
 
     def test_nested_archives_supply_missing_lock_versions_and_reject_mismatch(self) -> None:
+        """Nested subcharts must supply exact versions without changing umbrella identity."""
         self.fixture(fallback=True, missing_lock=True, nested=True)
         self.assertEqual(self.run_release().returncode, 0)
         manifest = json.loads((self.directory / "umbrella-dependencies.json").read_text())
@@ -312,6 +358,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
         self.assertNotEqual(self.run_release().returncode, 0)
 
     def test_component_invalid_api_response_fails_closed(self) -> None:
+        """The component publisher must stop when release discovery returns invalid JSON."""
         action = yaml.safe_load((ROOT / ".github/actions/create-component-release/action.yaml").read_text())
         result = self.run_shell(
             action["runs"]["steps"][0]["run"],
@@ -323,6 +370,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
         self.assertEqual(len(self.calls()), 1)
 
     def test_component_actual_shell_create_and_edit_opt_out(self) -> None:
+        """Component releases must opt out of Latest on both creation and update."""
         action = yaml.safe_load((ROOT / ".github/actions/create-component-release/action.yaml").read_text())
         script = action["runs"]["steps"][0]["run"]
         for version in ("v7.4.2", "v7.4.2-rc.1"):
@@ -339,6 +387,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
         )
 
     def test_binary_consumer_and_goreleaser_opt_out(self) -> None:
+        """Binary publication must retain scoped tags without taking umbrella Latest."""
         workflow = yaml.safe_load((ROOT / ".github/workflows/publish-binaries.yaml").read_text())
         script = next(
             step["run"]
@@ -359,6 +408,7 @@ class UmbrellaReleaseTests(unittest.TestCase):
         self.assertEqual(config["release"]["prerelease"], "auto")
 
     def test_graphify_only_release_creation_opts_out(self) -> None:
+        """The floating graph release must opt out of Latest and propagate failures."""
         workflow = yaml.safe_load((ROOT / ".github/workflows/graphify-brain-refresh.yaml").read_text())
         steps = [step for job in workflow["jobs"].values() for step in job["steps"]]
         script = next(step["run"] for step in steps if step.get("name") == "Publish to GH Release")
@@ -385,7 +435,32 @@ class UmbrellaReleaseTests(unittest.TestCase):
 
 
 class ReleaseWorkflowContractTests(unittest.TestCase):
+    def test_conditions_reject_python_execution_and_unsupported_syntax(self) -> None:
+        """Reject executable Python, including code in an unused boolean branch."""
+        expressions = (
+            "().__class__.__bases__[0].__subclasses__()",
+            "always().__class__",
+            "(lambda: True)()",
+            "[value for value in 'abc']",
+            "fromJSON('{}', object_hook=always)",
+            "contains(*fromJSON('[\"success\"]'))",
+            "always('unexpected')",
+            "fromJSON('{}')",
+            "1 + 1 == 2",
+            "True if always() else False",
+            "unknown()",
+            "always(",
+            "always() || ().__class__.__bases__[0].__subclasses__()",
+            "cancelled() && ().__class__.__bases__[0].__subclasses__()",
+        )
+        for expression in expressions:
+            with self.subTest(expression=expression):
+                with patch.dict(WORKFLOW["jobs"], {"condition-fixture": {"if": expression}}):
+                    with self.assertRaises(ValueError):
+                        condition("condition-fixture", "release", {})
+
     def test_notification_and_publication_matrix(self) -> None:
+        """Notifications must reflect publication outcomes and respect cancellation."""
         jobs = WORKFLOW["jobs"]
         results = {name: "success" for name in jobs}
         for mode in ("release", "nightly"):
@@ -423,6 +498,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertEqual(jobs["create-umbrella-release"]["concurrency"]["cancel-in-progress"], False)
 
     def test_ci_consumes_tests_and_workflow_consumes_helper(self) -> None:
+        """CI and publication must keep using the tested consumers and immutable guard."""
         ci = (ROOT / ".github/workflows/pre-commit.yaml").read_text()
         self.assertIn("unittest discover -s .github/scripts -p test_umbrella_release.py", ci)
         script = str(WORKFLOW["jobs"]["create-umbrella-release"]["steps"])

@@ -17,18 +17,22 @@ GUIDE = "docs/guides/installation/customer-install-guide.md"
 
 
 def gh(*arguments: str) -> str:
+    """Capture GitHub CLI output and propagate failures to the publishing job."""
     return subprocess.check_output(["gh", *arguments], text=True)
 
 
 def stable_key(version: str) -> tuple[int, ...] | None:
+    """Order stable SemVer cores numerically while excluding evaluation versions."""
     match = STABLE.fullmatch(version)
     return tuple(map(int, match.groups())) if match else None
 
 
 def package_manifest(package: Path, version: str) -> dict[str, Any]:
+    """Validate umbrella identity and resolve dependencies from its published package."""
     with tarfile.open(package, "r:gz") as archive:
 
         def read_yaml(name: str) -> dict[str, Any]:
+            """Read chart metadata directly from the archive without extracting paths."""
             return yaml.safe_load(archive.extractfile(name))
 
         chart = read_yaml("osac/Chart.yaml")
@@ -70,6 +74,7 @@ def package_manifest(package: Path, version: str) -> dict[str, Any]:
 
 
 def release_notes(manifest: dict[str, Any], component_versions: dict[str, str], repo: str) -> str:
+    """Render package inventory, pinned installation steps, and upgrade precautions."""
     version = manifest["version"]
     rows = ["| Chart | Exact packaged/locked version | Source |", "| --- | --- | --- |"]
     for entry in manifest["dependencies"]:
@@ -127,6 +132,7 @@ asserted here. Prereleases/nightlies are for evaluation, not the stable recommen
 
 
 def publish(package: Path, version: str, component_versions: dict[str, str], repo: str) -> None:
+    """Publish the inventory and notes while preserving any newer stable Latest."""
     manifest = package_manifest(package, version)
     notes = release_notes(manifest, component_versions, repo)
     Path("umbrella-dependencies.json").write_text(json.dumps(manifest, indent=2) + "\n")
