@@ -90,10 +90,10 @@ for newer builds and use the newest successful run. The chart includes a
 
 Select an umbrella chart version from the release links above and export it
 once. The following example uses the published stable
-[`osac-release/v0.0.62` release](https://github.com/osac-project/osac/releases/tag/osac-release%2Fv0.0.62):
+[`osac-release/v0.0.63` release](https://github.com/osac-project/osac/releases/tag/osac-release%2Fv0.0.63):
 
 ```console
-export OSAC_RELEASE_VERSION="0.0.62"
+export OSAC_RELEASE_VERSION="0.0.63"
 ```
 
 > **Note**
@@ -281,10 +281,11 @@ Required for a production deployment:
 
 Required for CaaS:
 
-- **DNS credentials.** Route 53 is the only DNS backend the chart schema
-  accepts, so a Helm install requires an `AWS_ACCESS_KEY_ID` value and an
-  `AWS_SECRET_ACCESS_KEY` value that can manage the target hosted zone, even
-  in an on-premises environment. To run without OSAC managing DNS, see
+- **DNS credentials.** The chart schema accepts `dns.route53.dns` (the
+  default) and `dns.noop.dns`. Route 53 requires an `AWS_ACCESS_KEY_ID` value
+  and an `AWS_SECRET_ACCESS_KEY` value that can manage the target hosted zone.
+  `dns.noop.dns` does not. To run without OSAC managing DNS, set
+  `DNS_CLASS` as described in
   [Section 8.4](#84-installing-without-dns-management). For more information,
   see
   [`dns-backend.md`](https://github.com/osac-project/osac/blob/main/osac-installer/docs/dns-backend.md).
@@ -590,7 +591,8 @@ subchart's own `values.yaml` file.
 | `operator.hubAccess.enabled` | schema | Creates the hub-access `ClusterRole` that the Fulfillment Service binds to. |
 | `operator.stall.preparingInfrastructureThreshold`, `operator.stall.controlPlaneStartingThreshold`, `operator.stall.workersJoiningThreshold` | schema | How long a cluster provisioning phase can wait before the Operator marks it stalled. |
 | `operator.tenants[]` | subchart | Tenants pre-created at installation. `shared` is the built-in tenant. |
-| `operator.networkManagers.fabricManagers.<name>.enabled`, `operator.networkManagers.k8sManagers.<name>.enabled` | subchart | Enables a fabric manager (`netris`, `cudn_net`) or a Kubernetes manager (`k8s_only`). |
+| `operator.networkManagers.fabricManagers.<name>.enabled`, `operator.networkManagers.k8sManagers.<name>.enabled` | subchart | Enables a fabric manager (`netris`, `cudn_net`) or a Kubernetes manager (`k8s_only`, `cudn_evpn`). |
+| `operator.remoteClusterKubeconfig`, `operator.remoteClusterKubeconfigSecretName`, `operator.remoteClusterKubeconfigSecretKey` | schema | Kubeconfig mount for VMaaS on a separate workload cluster. Set the path and Secret name together. The key defaults to `kubeconfig`. See [Section 6.4](#64-installing-vmaas-on-a-separate-workload-cluster). |
 
 **Table 5.3. Networking (umbrella level)**
 
@@ -599,7 +601,7 @@ subchart's own `values.yaml` file.
 | `networkManagers[]` | schema | Registers network-manager `ConfigMap` resources that the Operator dispatcher discovers. Each entry has `name`, `role` (`fabric` or `k8s`), `description`, and `capabilities`. Equivalent to `operator.networkManagers.*`. | `[]` |
 | `networkClass.enabled` | schema | Creates the default `NetworkClass` in the Fulfillment Service after installation. Required for VirtualNetwork and tenant onboarding. | `true` |
 | `networkClass.title`, `networkClass.description` | schema | Required title and description for the `NetworkClass`. | CUDN text |
-| `networkClass.fabricManager`, `networkClass.k8sManager` | schema | Which registered manager backs the class. For fabric-less VMaaS, set `fabricManager: ""` and `k8sManager: "k8s_only"`. For Netris, set `fabricManager: "netris"`. | `cudn_net` and `""` |
+| `networkClass.fabricManager`, `networkClass.k8sManager` | schema | Which registered manager backs the class. For fabric-less VMaaS, set `fabricManager: ""` and `k8sManager: "k8s_only"`. For CUDN EVPN, set `k8sManager: "cudn_evpn"`. For Netris, set `fabricManager: "netris"`. | `cudn_net` and `""` |
 | `networkClass.isDefault` | schema | Marks the class the deployment default. Only one `NetworkClass` can exist. | `true` |
 | `networkClass.defaults.virtualNetworkIPv4CIDR`, `networkClass.defaults.subnetIPv4CIDR`, `networkClass.defaults.enableNatGateway`, `networkClass.defaults.egressRules` | schema | Tenant-onboarding defaults that auto-create the VirtualNetwork, Subnet, and SecurityGroup. | `10.200.0.0/16` and others |
 
@@ -632,6 +634,7 @@ subchart's own `values.yaml` file.
 | `aap.configAsCode.manifestSecret` | Secret that holds `license.zip`. |
 | `aap.configAsCode.secret` | Secret with config-as-code runtime flags. |
 | `aap.configAsCode.projectGitUri`, `aap.configAsCode.projectGitBranch` | Git source for the Ansible content that the bootstrap job imports. |
+| `aap.configAsCode.remoteClusterKubeconfigSecretName`, `aap.configAsCode.remoteClusterKubeconfigSecretKey` | Secret name and key that AAP config-as-code uses for VM operations on a separate workload cluster. The key defaults to `kubeconfig`. See [Section 6.4](#64-installing-vmaas-on-a-separate-workload-cluster). |
 | `aap.configAsCode.importAgentsEnabled`, `aap.configAsCode.importBcmAgentsEnabled` | Enable bare-metal agent import and the BCM inventory backend. |
 | `aap.instanceGroups.clusterFulfillment.enabled`, `aap.instanceGroups.clusterFulfillment.config`, `aap.instanceGroups.clusterFulfillment.secret` | The `cluster-fulfillment` instance group for CaaS provisioning. See [Section 6.2](#62-installing-osac-for-caas-with-the-netris-network-backend). |
 | `aap.instanceGroups.networkFulfillment.enabled`, `aap.instanceGroups.networkFulfillment.config`, `aap.instanceGroups.networkFulfillment.secret` | The `network-fulfillment` instance group for Netris. See [Section 6.2](#62-installing-osac-for-caas-with-the-netris-network-backend). |
@@ -739,6 +742,18 @@ the cluster. Then follow [Section 4](#4-installing-osac).
    first `ComputeInstance` needs. Without it, provisioning fails with an empty
    `storage_tier_definitions` even though every pod looks healthy.
 
+   For VMaaS that bridges virtual machines onto an EVPN fabric, do not use
+   this `k8s_only` block. Enable
+   `operator.networkManagers.k8sManagers.cudn_evpn` and set
+   `networkClass.k8sManager` to `cudn_evpn`. Host networking is configured in
+   the infra values file. See
+   [EVPN host networking](helm-deployment-guide.md#evpn-host-networking-vmaas).
+   That setup requires OpenShift 4.22 or later.
+
+   For virtual machines on a different cluster from the OSAC management
+   services, see
+   [Section 6.4](#64-installing-vmaas-on-a-separate-workload-cluster).
+
 2. Add the `service.*`, `aap.configAsCode.*`, Keycloak hardening, and database
    Secret settings from [Section 4.2](#42-configuring-the-helm-values).
 
@@ -757,7 +772,9 @@ the cluster. Then follow [Section 4](#4-installing-osac).
 ### 6.2 Installing OSAC for CaaS with the Netris network backend
 
 The AWS Route 53 DNS backend is the default; it's independent of the network
-backend. For the full variable reference, see
+backend. The schema also accepts `dns.noop.dns`. See
+[Section 8.4](#84-installing-without-dns-management). For the full variable
+reference, see
 [`network-backend.md`](https://github.com/osac-project/osac/blob/main/osac-installer/docs/network-backend.md).
 
 **Prerequisites**
@@ -917,6 +934,43 @@ backend. For the full variable reference, see
 
 - Create a `BareMetalPool` or `BareMetalInstance` custom resource and confirm
   that the Bare Metal Fulfillment Operator reconciles it.
+
+### 6.4 Installing VMaaS on a separate workload cluster
+
+Use this layout when OSAC management services run on one OpenShift cluster
+and virtual machines run on another. Leave CaaS disabled. The cluster
+controller cannot run in the same operator instance.
+
+Prepare the two clusters with Helm as described in
+[Separate VMaaS workload cluster](helm-deployment-guide.md#separate-vmaas-workload-cluster).
+Create the workload kubeconfig Secret on the management cluster, including
+the console-proxy label, as described in
+[VMaaS dedicated cluster](https://github.com/osac-project/osac/blob/main/osac-operator/docs/vmaas-dedicated-cluster/README.md).
+
+In `my-values.yaml`, enable VMaaS only and point the operator and AAP at that
+Secret:
+
+```yaml
+global:
+  services: { vmaas: { enabled: true }, caas: { enabled: false }, bmaas: { enabled: false }, maas: { enabled: false } }
+operator:
+  remoteClusterKubeconfig: /var/run/secrets/remote/kubeconfig
+  remoteClusterKubeconfigSecretName: osac-remote-kubeconfig
+  remoteClusterKubeconfigSecretKey: kubeconfig
+aap:
+  configAsCode:
+    remoteClusterKubeconfigSecretName: osac-remote-kubeconfig
+    remoteClusterKubeconfigSecretKey: kubeconfig
+```
+
+`remoteClusterKubeconfig` is the path inside the operator container. The
+Secret name and key must match the Secret on the management cluster. The
+chart default key is `kubeconfig`.
+
+Install OSAC on the management cluster. See
+[Section 4.3](#43-installing-osac). Complete
+[Section 7](#7-verifying-the-installation) there, and confirm that the
+virtual machine is created on the workload cluster.
 
 ---
 
@@ -1379,39 +1433,40 @@ Multi-hub environments are currently unsupported, and support may be added in fu
 
 ### 8.4 Installing without DNS management
 
-`dns.route53.dns` is the only `DNS_CLASS` the chart schema accepts; a Helm
-install always requires Route 53 credentials, even in an on-premises
-environment with no Route 53 zone. To run CaaS without OSAC managing DNS,
-install normally and then patch the `cluster-fulfillment-ig` `ConfigMap`
-afterward — this bypasses schema validation, so it can't be set through Helm
-values directly.
+The chart schema accepts `dns.route53.dns` and `dns.noop.dns`. Set
+`dns.noop.dns` in `my-values.yaml` when OSAC should not create or delete DNS
+records. Route 53 credentials are not required for that class.
 
 **Procedure**
 
-1. After installation, and before creating the first `ClusterOrder`, patch
-   the `ConfigMap`:
+1. In `my-values.yaml`, before the first `ClusterOrder`, set the DNS class
+   and the guest domain values on the `cluster-fulfillment` instance group:
 
-   ```console
-   export NS=<namespace>
-   oc -n "$NS" patch cm cluster-fulfillment-ig --type merge -p '{
-       "data": {
-         "DNS_CLASS": "dns.noop.dns",
-         "EXTERNAL_ACCESS_BASE_DOMAIN": "<guest_domain>",
-         "HOSTED_CLUSTER_BASE_DOMAIN": "<guest_domain>",
-         "EXTERNAL_ACCESS_SUPPORTED_BASE_DOMAINS": "<supported_domain>"
-       }
-     }'
+   ```yaml
+   aap:
+     instanceGroups:
+       clusterFulfillment:
+         enabled: true
+         config:
+           DNS_CLASS: dns.noop.dns
+           EXTERNAL_ACCESS_BASE_DOMAIN: <guest_domain>
+           HOSTED_CLUSTER_BASE_DOMAIN: <guest_domain>
+           EXTERNAL_ACCESS_SUPPORTED_BASE_DOMAINS: <supported_domain>
    ```
 
-2. Confirm the values took:
+2. Install or upgrade OSAC with that values file. See
+   [Section 4.3](#43-installing-osac). Helm renders these keys into the
+   `cluster-fulfillment-ig` `ConfigMap`.
+
+3. Confirm the values:
 
    ```console
    oc get cm cluster-fulfillment-ig -n "$NS" -o yaml \
        | grep -E 'DNS_CLASS|EXTERNAL_ACCESS|HOSTED_CLUSTER'
    ```
 
-3. Create these DNS records yourself; `dns.noop.dns` stops OSAC from managing
-   DNS, it does not create records for you:
+4. Create these DNS records yourself. `dns.noop.dns` stops OSAC from managing
+   DNS. It does not create records for you:
 
    ```text
    api.<cluster>.<guest_domain>       -> API endpoint
@@ -1421,8 +1476,8 @@ values directly.
    The records must resolve from the hub, the AAP execution environment, the
    managed host, and the hosted cluster.
 
-Reapply the patch after any infrastructure reinstall that recreates this
-`ConfigMap`.
+On a later upgrade, keep `DNS_CLASS: dns.noop.dns` in the values file. Helm
+reconciles the `ConfigMap` from those values.
 
 ### 8.5 Additional resources
 
@@ -1912,7 +1967,8 @@ with the correct `global.clusterDomain`.
   driven by the `NetworkClass` custom resource's registered fabric and
   Kubernetes managers. Netris is the documented fabric manager.
 - **DNS backend (`DNS_CLASS`)** — How CaaS clusters get DNS records:
-  `dns.route53.dns` (default, AWS Route 53).
+  `dns.route53.dns` (default, AWS Route 53) or `dns.noop.dns` (OSAC does not
+  create records).
 - **config-as-code** — The Ansible content that the `osac-aap-bootstrap` job
   loads into AAP. Its subscription manifest is stored in the
   `config-as-code-manifest-ig` Secret.
