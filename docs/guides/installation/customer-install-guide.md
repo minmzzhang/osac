@@ -1582,6 +1582,7 @@ records. Route 53 credentials are not required for that class.
 
    ```text
    api.<cluster>.<guest_domain>       -> API endpoint
+   api-int.<cluster>.<guest_domain>   -> API endpoint
    *.apps.<cluster>.<guest_domain>    -> ingress endpoint
    ```
 
