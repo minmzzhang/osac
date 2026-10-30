@@ -867,7 +867,8 @@ reference, see
 - The hub cluster has a default storage class (see
   [Section 2.1](#21-cluster-and-access)). Hosted control planes provision
   etcd persistent volume claims from it.
-- You have AWS Route 53 credentials for the target hosted zone.
+- If `DNS_CLASS` is `dns.route53.dns`, you have AWS Route 53 credentials
+  for the target hosted zone. They are not required for `dns.noop.dns`.
 - Access to the Netris controller: URL, user name, password, site and tenant
   IDs, and management VPC details.
 - SSH private keys for the servers and the bastion host.
