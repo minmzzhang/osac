@@ -566,6 +566,7 @@ backend, manager registrations, and NetworkClass from it. The top-level
 `networkClass` block is a legacy expert override and is ignored unless
 `global.expertOverrides.networkClass: true`. CUDN EVPN uses that expert path
 as shown in [Section 6.1](#cudn-evpn-with-netris).
+The Fulfillment API permits one NetworkClass per deployment.
 
 | Parameter | Source | Description | Default |
 |---|---|---|---|
@@ -575,7 +576,7 @@ as shown in [Section 6.1](#cudn-evpn-with-netris).
 | `networkClass.enabled` | schema | Runs NetworkClass creation through the expert path. The normal profile creates its NetworkClass independently of this value. | `false` |
 | `networkClass.title`, `networkClass.description` | schema | Expert NetworkClass title and optional description. A nonempty title is required when the expert block is enabled. | Both `""` |
 | `networkClass.fabricManager`, `networkClass.k8sManager` | schema | Expert manager names, matching registrations under `operator.networkManagers`. The CUDN EVPN/Netris example selects `netris` and `cudn_evpn`. | Both `""` |
-| `networkClass.isDefault` | schema | Expert default-class flag. Only one NetworkClass can exist per deployment. | Not set |
+| `networkClass.isDefault` | schema | Legacy validation input for the `cudn_net` profile, which requires `true`. Not sent to the Fulfillment API; it does not mark a default class. | Not set |
 | `networkClass.defaults.virtualNetworkIPv4CIDR`, `networkClass.defaults.subnetIPv4CIDR`, `networkClass.defaults.enableNatGateway`, `networkClass.defaults.egressRules` | schema | Expert tenant-onboarding defaults that auto-create the VirtualNetwork, Subnet, and SecurityGroup. | `10.200.0.0/16`, `10.200.0.0/20`, `false`, and allow-all IPv4 egress |
 
 **Table 5.4. Fulfillment Service (`service.*`, all `schema`)**
@@ -586,7 +587,7 @@ as shown in [Section 6.1](#cudn-evpn-with-netris).
 | `service.variant` | `openshift` or `kind`. Use `openshift`. |
 | `service.images.service`, `service.images.envoy` | Fulfillment Service and Envoy sidecar images. |
 | `service.certs.issuerRef.kind`, `service.certs.issuerRef.name` | cert-manager issuer for the service certificates. |
-| `service.certs.caBundle.configMap` | Existing CA-bundle `ConfigMap` mounted by the OSAC hooks. This value does not create or rename the ConfigMap. Set it to the existing ConfigMap name in the OSAC release namespace. Defaults to `ca-bundle`; see step 4 of [Section 7](#7-verifying-the-installation). |
+| `service.certs.caBundle.configMap` | Existing CA-bundle `ConfigMap` mounted by the OSAC hooks. It must contain the PEM bundle under the fixed `bundle.pem` key. This value does not create or rename the ConfigMap. Set it to the existing ConfigMap name in the OSAC release namespace. Defaults to `ca-bundle`; see step 4 of [Section 7](#7-verifying-the-installation). |
 | `service.auth.issuerUrl` | OIDC issuer. Templated from `global.clusterDomain` by default. |
 | `service.auth.controllerCredentials[]` | Volume sources for the controller OIDC client credentials. |
 | `service.idp.provider`, `service.idp.url`, `service.idp.credentials[]` | Identity provider for user and role management. Only `keycloak` is supported. |
@@ -782,7 +783,6 @@ networkClass:
   description: "IPv4 networking through Netris and CUDN EVPN"
   fabricManager: netris
   k8sManager: cudn_evpn
-  isDefault: true
 lvms:
   enabled: true
 aap:
@@ -1103,9 +1103,8 @@ passed. If a step fails, see [Section 11](#11-troubleshooting).
    oc get configmap <ca_bundle_configmap> -n <namespace> -o yaml
    ```
 
-   Extract the bundle once for the client checks below. The example reads
-   the `bundle.pem` key; adjust the JSONPath if your ConfigMap uses a different
-   PEM key:
+   The ConfigMap must contain the CA bundle under the fixed `bundle.pem` key
+   required by the OSAC hooks. Extract it once for the client checks below:
 
    ```console
    oc get configmap <ca_bundle_configmap> -n <namespace> \
