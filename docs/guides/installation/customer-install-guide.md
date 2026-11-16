@@ -1499,6 +1499,9 @@ be updated. Restore the earlier value and roll out again.
 | CaaS `EXTERNAL_ACCESS_BASE_DOMAIN`, `HOSTED_CLUSTER_BASE_DOMAIN`, `DNS_ZONE`, and `DNS_CLASS` | Do not change them while any Cluster exists. Keep each in-use HostedCluster base domain in `EXTERNAL_ACCESS_SUPPORTED_BASE_DOMAINS` until all Clusters using it are deleted. | The endpoint jobs reject unsupported publication domains; removing a published domain blocks DNS cleanup and holds its automatic endpoint IPs until the domain is supported again. |
 | OSAC release | Patch releases (x.y.z) of the same minor release roll out in place. Another minor release, up or down, does not: delete all workloads and networking resources, or reinstall. | While any VirtualNetwork, ExternalIPPool, or workload exists, the fulfillment service refuses to start: "in-place upgrade or downgrade between minor releases is not supported; delete all workloads and networking resources or reinstall". |
 
+To move an existing deployment between releases, including from 0.4 to 0.5,
+see [Upgrading OSAC](upgrading.md).
+
 The installer's checks run in the post-installation and post-upgrade Job
 `create-network-class`, which is kept when it fails. Read a failure with
 `oc logs job/create-network-class -n "$NS"`. The fulfillment service's
@@ -3210,6 +3213,11 @@ instance values in production and follow the storage handoff in
 ---
 
 ## 10. Uninstalling OSAC
+
+> To roll to another minor release instead of removing the platform, follow
+> [Upgrading OSAC](upgrading.md). An uninstall keeps the CRDs and the retained
+> deployment-identity `ConfigMap`, but removes the `osac` workloads and the
+> AAP instance.
 
 **Procedure**
 

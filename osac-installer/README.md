@@ -151,7 +151,7 @@ Ensure your values directory contains the necessary secret files:
 OSAC installs in three phases via `make install`. Each phase's outputs are
 the next phase's inputs — this is required because Helm validates all templates
 before applying any, and later phases depend on CRDs and secrets that earlier
-phases create. See [docs/helm-deployment-guide.md](docs/helm-deployment-guide.md)
+phases create. See [docs/helm-deployment-guide.md](../docs/guides/installation/helm-deployment-guide.md)
 for a detailed explanation.
 
 ```bash
@@ -997,6 +997,20 @@ The OSAC operator requires an API token to communicate with AAP. The
 `create-api-token` Helm hook creates this automatically during `make install-osac`.
 The token is stored in the `osac-aap-api-token` Secret.
 
+## Upgrading OSAC
+
+Upgrades are Helm operations on the existing releases. They are not the same as
+a fresh install: several values are fixed at the first installation, and moving
+between minor releases is restricted.
+
+- Patch upgrade runbook (0.4.0-rc.1 → 0.4.0-rc.3), including the values that
+  must be carried forward and the pre-flight checks:
+  [Upgrading OSAC](../docs/guides/installation/upgrading.md).
+- Installation and fixed-at-install settings:
+  [Customer installation guide](../docs/guides/installation/customer-install-guide.md).
+- Phase 1a/1b/2 deployment details:
+  [Helm deployment guide](../docs/guides/installation/helm-deployment-guide.md).
+
 ## Tearing Down OSAC
 
 To completely remove an OSAC deployment and all its prerequisites, use the teardown script:
@@ -1046,7 +1060,7 @@ The script removes resources in reverse order:
    `osac get clustertemplates` returns missing or unexpected results, check the
    hook pod logs:
    `oc logs job/osac-publish-templates -n <project-name>`.
-   See [docs/helm-deployment-guide.md](docs/helm-deployment-guide.md#template-publish-hook-failing)
+   See [docs/helm-deployment-guide.md](../docs/guides/installation/helm-deployment-guide.md#template-publish-hook-failing)
    for details.
 
 ### Debug Commands
