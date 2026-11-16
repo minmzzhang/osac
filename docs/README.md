@@ -23,6 +23,9 @@ see the [external services support guide](guides/installation/external-services-
 For tenant machine identities, see the [Tenant Service Accounts Guide](guides/tenant-service-accounts.md)
 for account administration, access grants, credential rotation, and workload authentication.
 
+To move an existing deployment to another OSAC release, see
+[Upgrading OSAC](guides/installation/upgrading.md).
+
 - [Ethernet FabricDomains](guides/admin/fabric-domains.md): hardware bindings,
   inventory onboarding, membership changes, cleanup, and troubleshooting.
 - [Labels and annotations](guides/admin/metadata.md): reserved metadata,
